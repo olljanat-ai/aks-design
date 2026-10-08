@@ -1,0 +1,5 @@
+title: aks-design
+# Only publish the design document and its pictures.
+exclude:
+  - diagrams
+  - scripts
