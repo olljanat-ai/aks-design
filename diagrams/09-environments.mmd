@@ -1,0 +1,37 @@
+%% Nine clusters: three environments x (two zonal stateless clusters + one stateful cluster).
+%% Every environment is built from the same IaC modules and the same Flux configuration, only parameters differ.
+flowchart TB
+    src["Same source for every environment<br/>IaC modules (Bicep / Terraform): one per cluster type, env + AZ as parameters<br/>Fleet Git repository: Flux configuration of everything inside the clusters"]
+
+    subgraph DEV["dev · subscription sub-aks-dev"]
+        d1["aks-dev-sl-az1<br/>stateless · AZ 1"]
+        d2["aks-dev-sl-az2<br/>stateless · AZ 2"]
+        d3["aks-dev-sf<br/>stateful · AZ 1-3 · LTS"]
+        d1 ~~~ d2 ~~~ d3
+    end
+    subgraph ACC["acc · subscription sub-aks-acc"]
+        a1["aks-acc-sl-az1<br/>stateless · AZ 1"]
+        a2["aks-acc-sl-az2<br/>stateless · AZ 2"]
+        a3["aks-acc-sf<br/>stateful · AZ 1-3 · LTS"]
+        a1 ~~~ a2 ~~~ a3
+    end
+    subgraph PRD["prd · subscription sub-aks-prd"]
+        p1["aks-prd-sl-az1<br/>stateless · AZ 1"]
+        p2["aks-prd-sl-az2<br/>stateless · AZ 2"]
+        p4["aks-prd-sl-az3<br/>optional 3rd AZ"]
+        p3["aks-prd-sf<br/>stateful · AZ 1-3 · LTS"]
+        p1 ~~~ p2 ~~~ p4 ~~~ p3
+    end
+
+    src -.->|"build + reconcile"| DEV
+    DEV ==>|"promote: automated tests passed<br/>(same image digests, same Flux artifact)"| ACC
+    ACC ==>|"promote: acceptance passed<br/>+ change approval"| PRD
+
+    classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
+    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
+    classDef opt fill:#f5f5f5,stroke:#9e9e9e,color:#000,stroke-dasharray: 5 5
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    class d1,d2,a1,a2,p1,p2 sl
+    class d3,a3,p3 sf
+    class p4 opt
+    class src note

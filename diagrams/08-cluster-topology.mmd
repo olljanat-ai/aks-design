@@ -1,0 +1,58 @@
+%% Cluster topology of ONE environment (dev, acc and prd are identical): zonal stateless clusters in the
+%% frontend network, one zone-redundant stateful cluster in the backend network next to the Azure PaaS services.
+flowchart TB
+    internet(("Internet"))
+    corp["Corporate network<br/>(via hub Firewall)"]
+
+    subgraph EDGE["Traffic layer (zone-redundant, health-probed, weighted)"]
+        direction LR
+        waf["Application Gateway WAF v2 / Front Door<br/>external zones"]
+        agw_in["Internal Application Gateway<br/>internal zones"]
+    end
+
+    subgraph FRONT["Frontend network – stateless clusters, one per availability zone"]
+        direction LR
+        sl1["<b>aks-&lt;env&gt;-sl-az1</b><br/>vnet-&lt;env&gt;-sl-az1<br/>all node pools in AZ 1<br/>zones int-fi, int-se, ext-fi, ext-se<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
+        sl2["<b>aks-&lt;env&gt;-sl-az2</b><br/>vnet-&lt;env&gt;-sl-az2<br/>all node pools in AZ 2<br/>identical apps and config<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
+        sl3["<b>aks-&lt;env&gt;-sl-az3</b> (optional)<br/>vnet-&lt;env&gt;-sl-az3<br/>all node pools in AZ 3"]
+        sl1 ~~~ sl2 ~~~ sl3
+    end
+
+    fw["Hub: Azure Firewall Premium<br/>Internet egress allow-list (frontend only)<br/>+ east-west inspection"]
+
+    subgraph BACK["Backend network – no Internet route in either direction"]
+        direction LR
+        sf["<b>aks-&lt;env&gt;-sf</b> (single cluster)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none"]
+        subgraph PAAS["Azure PaaS – private endpoints only"]
+            direction TB
+            db["Azure SQL / PostgreSQL<br/>(zone-redundant)"]
+            st["Storage (ZRS), Service Bus,<br/>Event Hubs, Cosmos DB"]
+            acr["ACR Premium (zone-redundant)<br/>images, charts, Flux artifacts"]
+            kv["Key Vault per isolation zone"]
+        end
+    end
+
+    blocked(("Internet"))
+
+    internet ==>|"HTTPS"| waf
+    corp ==> agw_in
+    EDGE ==>|"backend pool = ingress ILB of every stateless cluster<br/>probe failure or weight 0 removes a cluster"| FRONT
+    FRONT -->|"egress + east-west"| fw
+    fw -->|"only: stateful ingress ILB,<br/>PaaS private endpoints"| BACK
+    sf --> PAAS
+    BACK x-.-x|"⛔ blocked: no public IP, no outbound type,<br/>UDR 0/0 → Firewall deny-all"| blocked
+
+    linkStyle 8 stroke:#c62828,stroke-width:3px,stroke-dasharray:6 4
+
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
+    classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
+    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
+    classDef paas fill:#eceff1,stroke:#455a64,color:#000
+    classDef opt fill:#f5f5f5,stroke:#9e9e9e,color:#000,stroke-dasharray: 5 5
+    classDef off fill:#ffebee,stroke:#c62828,color:#000
+    class fw,waf,agw_in,corp hub
+    class sl1,sl2 sl
+    class sl3 opt
+    class sf sf
+    class db,st,acr,kv paas
+    class blocked off

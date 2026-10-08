@@ -1,0 +1,34 @@
+%% Zero-downtime upgrade of the single zone-redundant stateful cluster: in-place, one availability zone at a time,
+%% protected by PodDisruptionBudgets and zone-redundant storage.
+flowchart TB
+    subgraph SF["aks-&lt;env&gt;-sf (AKS LTS, Premium tier, zone-redundant control plane)"]
+        direction LR
+        subgraph Z1["AZ 1"]
+            n1["node pools *z1 (intfiz1, …)<br/>pod replica 1"]
+        end
+        subgraph Z2["AZ 2"]
+            n2["node pools *z2<br/>pod replica 2"]
+        end
+        subgraph Z3["AZ 3"]
+            n3["node pools *z3<br/>pod replica 3"]
+        end
+    end
+
+    cp["1. Control plane upgrade<br/>(no workload restart; API stays available)"]
+    np["2. Node pools one AZ at a time:<br/>maxSurge 1 / maxUnavailable 0,<br/>cordon → drain (PDB respected) → reimage,<br/>node soak time before next node"]
+    pdb["Guardrails per StatefulSet<br/>• ≥ 3 replicas, one per AZ (topologySpreadConstraints)<br/>• PDB maxUnavailable 1<br/>• Premium_ZRS / StandardSSD_ZRS disks: pod can move zone<br/>• readiness gates on replication / quorum"]
+    when["When<br/>• patch + node image: auto-upgrade channels inside<br/>  planned maintenance windows (dev → acc → prd staggered)<br/>• LTS minor: once per LTS cycle, rehearsed in dev and acc"]
+
+    cp --> np
+    np -->|"first"| n1
+    np -->|"then"| n2
+    np -->|"then"| n3
+    pdb -.-> SF
+    when -.-> cp
+
+    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    class n1,n2,n3 sf
+    class pdb,when note
+    class cp,np cp

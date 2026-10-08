@@ -1,0 +1,19 @@
+%% Zero-downtime cluster upgrade of the stateless clusters: one zonal cluster at a time is drained from the
+%% traffic layer, upgraded (or rebuilt), verified and put back. Same pipeline runs in dev, then acc, then prd.
+sequenceDiagram
+    autonumber
+    participant P as Upgrade pipeline<br/>(or Fleet Manager update run)
+    participant T as Traffic layer<br/>(App Gateway / Front Door)
+    participant A as aks-env-sl-az1
+    participant B as aks-env-sl-az2
+    Note over A,B: Both clusters serve traffic. Each is sized to carry 100 % of the load alone (N+1).
+    P->>B: Pre-scale: raise HPA minReplicas / node count to full-load capacity
+    P->>T: Set az1 backend weight to 0 (or disable backend)
+    T-->>A: Connection draining (no new requests)
+    P->>A: Upgrade control plane + node pools<br/>(or create new cluster from IaC, Flux bootstraps it)
+    A->>A: Flux reconciles all apps, health checks
+    P->>A: Smoke + synthetic tests through cluster-local ingress
+    P->>T: Restore az1 weight (gradually, e.g. 10 % → 50 % → 100 %)
+    Note over P: Watch error rate / latency SLO. Breach → weight 0 again, stop.
+    P->>A: Pre-scale az1, then repeat steps 2–7 for az2 (and az3)
+    P->>B: Remove pre-scale, autoscalers take over
