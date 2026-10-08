@@ -1,46 +1,59 @@
-%% Key Vault per zone + per-application access with Azure RBAC + ABAC conditions (secret-name prefix)
+%% Workload identity first: applications authenticate to Azure services with Entra ID (no keys, local auth disabled).
+%% Key Vault holds secrets only for targets without Entra ID, separated per application with RBAC + ABAC conditions.
 flowchart LR
     subgraph ZONE["Zone int-fi (namespaces on node pool intfi)"]
         direction TB
-        subgraph NSA["ns: int-fi-app-a"]
-            saA["ServiceAccount app-a<br/>(workload identity)"]
-            csiA["Secrets Store CSI<br/>SecretProviderClass"]
+        subgraph NSA["ns: int-fi-app-a (no secrets)"]
+            saA["ServiceAccount app-a<br/>azure.workload.identity/client-id"]
         end
-        subgraph NSB["ns: int-fi-app-b"]
-            saB["ServiceAccount app-b<br/>(workload identity)"]
-            csiB["Secrets Store CSI<br/>SecretProviderClass"]
+        subgraph NSB["ns: int-fi-app-b (secret exception)"]
+            saB["ServiceAccount app-b<br/>azure.workload.identity/client-id"]
+            csiB["Secrets Store CSI<br/>mounted as files only"]
         end
     end
 
     subgraph ENTRA["Microsoft Entra ID"]
-        miA["Managed identity<br/>id-int-fi-app-a<br/>federated: system:serviceaccount:int-fi-app-a:app-a"]
-        miB["Managed identity<br/>id-int-fi-app-b<br/>federated: system:serviceaccount:int-fi-app-b:app-b"]
+        miA["Managed identity id-int-fi-app-a<br/>federated credential per cluster:<br/>sl-az1, sl-az2, sf issuers<br/>subject system:serviceaccount:int-fi-app-a:app-a"]
+        miB["Managed identity id-int-fi-app-b<br/>federated credential per cluster<br/>(secret exception for one partner API)"]
+    end
+
+    subgraph PAAS["Zone int-fi Azure services (local auth disabled)"]
+        direction TB
+        sql["Azure SQL<br/>Entra-only auth"]
+        sb["Service Bus<br/>disableLocalAuth"]
+        st["Storage<br/>shared key disabled"]
     end
 
     subgraph KV["Key Vault kv-int-fi (RBAC mode, private endpoint only)"]
         direction TB
-        sA1["app-a-db-password"]
-        sA2["app-a-api-key"]
-        sB1["app-b-db-password"]
+        sB1["app-b-partner-api-key"]
+        sX["app-c-…"]
     end
 
-    raA["Role assignment<br/>Key Vault Secrets User @ kv-int-fi<br/>condition: secret name StringStartsWith 'app-a-'"]
-    raB["Role assignment<br/>Key Vault Secrets User @ kv-int-fi<br/>condition: secret name StringStartsWith 'app-b-'"]
+    ext["Third-party API<br/>(no Entra ID support)"]
 
-    csiA --> saA -->|"OIDC token exchange"| miA --> raA
-    csiB --> saB -->|"OIDC token exchange"| miB --> raB
-    raA -->|"allow"| sA1 & sA2
-    raB -->|"allow"| sB1
-    raA -.-x|"ForbiddenByRbac"| sB1
+    raB["Key Vault Secrets User @ kv-int-fi<br/>condition: secret name StringStartsWith 'app-b-'"]
 
-    other["Other zones' identities<br/>(no role assignment on kv-int-fi)"] -.-x|"denied"| KV
-    linkStyle 9,10 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
+    saA -->|"projected token → Entra token"| miA
+    miA -->|"contained db user"| sql
+    miA -->|"Data Sender / Receiver"| sb
+    miA -->|"Blob Data Reader"| st
+    csiB --> saB -->|"projected token → Entra token"| miB
+    miB -->|"data-plane roles"| sql
+    miB --> raB -->|"allow"| sB1
+    raB -.-x|"ForbiddenByRbac"| sX
+    csiB -.->|"app-b calls with the key"| ext
+
+    other["Other zones' identities<br/>(no role assignment in zone int-fi)"] -.-x|"denied"| PAAS
+    linkStyle 9,11 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
 
     classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
     classDef id fill:#e8f5e9,stroke:#2e7d32,color:#000
     classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    classDef paas fill:#eceff1,stroke:#455a64,color:#000
     classDef off fill:#ffebee,stroke:#c62828,color:#000
-    class saA,saB,csiA,csiB,sA1,sA2,sB1 int
+    class saA,saB,csiB,sB1,sX int
     class miA,miB id
-    class raA,raB note
+    class raB note
+    class sql,sb,st,ext paas
     class other off
