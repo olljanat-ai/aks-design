@@ -1,16 +1,17 @@
 %% Encryption in transit. Stateless: TLS ends at the zone's Traefik gateway (Let's Encrypt certificate for an internal
 %% name), node-to-node traffic is protected by Azure VNet encryption, so apps need no TLS, mTLS or service mesh.
 %% Stateful: no ingress at all, the application terminates TLS on its own internal load balancer.
-%% Certificates are issued once per zone and environment by a central job and shared by all clusters via Key Vault.
+%% Certificates are issued once per zone and environment by a job per environment into the environment's single platform
+%% Key Vault and shared by all clusters of that environment.
 flowchart LR
     client(("Client"))
 
     subgraph MGMT["Management network"]
-        job["Certificate renewal job<br/>(managed identity)<br/>DNS-01 · renew 30 days before expiry"]
+        job["Certificate renewal job of &lt;env&gt;<br/>(managed identity, Officer roles<br/>on kv-&lt;env&gt;-platform only)<br/>DNS-01 · renew 30 days before expiry"]
     end
     le["Let's Encrypt<br/>ACME"]
     pubdns["Public Azure DNS validation zone<br/>_acme-challenge TXT only"]
-    kv["Key Vault kv-&lt;env&gt;-ext-fi<br/>cert-ext-fi-wildcard<br/>*.ext-fi.&lt;env&gt;.example.com"]
+    kv["Platform Key Vault kv-&lt;env&gt;-platform<br/>(once per environment)<br/>cert-ext-fi-wildcard<br/>*.ext-fi.&lt;env&gt;.example.com<br/>+ cert-int-fi-…, cert-*-se-…"]
 
     subgraph EDGE["Traffic layer"]
         agw["App Gateway / Front Door<br/>HTTPS listener only"]
@@ -45,8 +46,8 @@ flowchart LR
     job -->|"order / renew"| le
     job -->|"TXT record"| pubdns
     job -->|"import certificate"| kv
-    kv -.->|"workload identity, cert- prefix"| tr
-    kv -.->|"workload identity, cert- prefix"| db
+    kv -.->|"workload identity,<br/>RBAC on this certificate only"| tr
+    kv -.->|"workload identity,<br/>RBAC on this certificate only"| db
     plain -.-x|"rejected: no listener, no LB port,<br/>Azure Policy denies HTTP listeners"| tr
 
     linkStyle 14 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5

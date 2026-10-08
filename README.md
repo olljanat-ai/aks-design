@@ -21,7 +21,7 @@ encrypted.
 | R1 | Control plane in a dedicated network | Private, VNet-integrated API server in its own delegated subnet; admin access only via Private Link from a separate management VNet ([picture 3](#3-control-plane)) |
 | R2 | Internal and external workloads isolated | Separate isolation zones `int-*` and `ext-*` |
 | R3 | Workloads of different countries isolated | Separate isolation zones per country (`*-fi`, `*-se`, …) |
-| R4 | Isolation = Key Vault + network + node pool per type | Every zone has its own Key Vault, subnets (NSG + route table) and node pool |
+| R4 | Isolation = Key Vault + network + node pool per type | Every zone has its own Key Vault, subnets (NSG + route table) and node pool; certificates are the one shared exception, kept in the per-environment platform Key Vault with a role assignment per certificate |
 | R5 | Only connectivity mandatory for Kubernetes allowed between zones | Deny-by-default on three layers: NSG, Azure Firewall, Cilium network policy ([picture 5](#5-allowed-and-blocked-flows)) |
 | R6 | Applications isolated in namespaces + network policies | Namespace per application, default-deny policies ([picture 7](#7-application-multi-tenancy-inside-a-zone)) |
 | R7 | Key Vault multi-tenancy with [Azure RBAC + ABAC](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-abac) | Per-application workload identity with secret-name-prefix conditions ([picture 6](#6-workload-identity-first-key-vault-secrets-only-when-needed)) |
@@ -36,7 +36,7 @@ encrypted.
 | R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, wave-based Flux rollout, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
 | R13 | dev, acc and prd environments kept in sync | 3 × 3 = 9 clusters from the same IaC modules, all in-cluster state from one Git repository: FluxCD in the stateless clusters, CI/CD pipeline in the stateful cluster ([picture 9](#9-environments-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
 | R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
-| R15 | Certificates distributed through Key Vault, shared by all clusters | Central renewal job issues one certificate per zone and environment into the zone's Key Vault; all clusters of the environment and every application that needs a certificate read it from the shared `cert-` part of the vault ([section 13](#certificates-issued-centrally-distributed-through-key-vault)) |
+| R15 | Certificates distributed through Key Vault, shared by all clusters | One shared **platform Key Vault per environment** (`kv-<env>-platform`) holds all certificates of that environment; a renewal job per environment issues one certificate per zone into it, and all clusters of the environment read it with plain Azure RBAC scoped to the individual certificate ([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
 
 **Isolation zone** = one *type* = one combination of exposure × country:
 
@@ -48,6 +48,13 @@ encrypted.
 | `ext-se` | external | SE | `extse` | `kv-<env>-ext-se` | `snet-ext-se-*` |
 
 Adding a country adds two zones (`int-xx`, `ext-xx`) following the same pattern.
+
+Next to the zone vaults, every environment has exactly **one shared platform Key Vault**:
+
+| Key Vault | Exists | Holds | Access |
+|---|---|---|---|
+| `kv-<env>-<zone>` | Once per zone and environment | Application secrets (`<app>-<secret>`) of that zone | RBAC + ABAC per application ([section 6](#6-workload-identity-first-key-vault-secrets-only-when-needed)) |
+| `kv-<env>-platform` | Once per environment (`kv-dev-platform`, `kv-acc-platform`, `kv-prd-platform`) | The environment's TLS certificates of all zones (`cert-<zone>-…`) and the renewal job's ACME account key | Plain Azure RBAC, role assignments scoped to single certificates ([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
 
 Colour legend in all pictures: grey = control plane / platform / PaaS, blue = internal, orange = external,
 purple = hub / management, green = identity, teal = stateless cluster, pink = stateful cluster,
@@ -133,6 +140,7 @@ Only the flows Kubernetes needs to function are allowed between a workload zone 
 | ③ | Zone pods | CoreDNS (system pods) | UDP/TCP 53 | name resolution |
 | ④ | metrics-server (system pods) | Zone nodes | TCP 10250 | resource metrics |
 | ⑤ | Zone pods | Own zone Key Vault PE | TCP 443 | secrets (only applications that need one) |
+| ⑤b | Zone pods that need a certificate (Traefik, TLS-terminating apps) | Platform Key Vault PE in `snet-platform-pe` | TCP 443 | certificates; Cilium policy allows only these pods, RBAC only their zone's certificates |
 | ⑥ | Zone nodes + pods | Azure Firewall | per FQDN | AKS required FQDNs, MCR, Entra ID (workload identity token exchange), Azure Monitor |
 | ⑦ | Zone nodes | All nodes | TCP 4240, ICMP | Cilium health (optional) |
 | – | AzureLoadBalancer | `snet-apiserver` | TCP 9988 | API server health probe |
@@ -181,8 +189,8 @@ storage account keys for Azure services.
 ### Secrets only when needed
 
 A secret is allowed only when the target cannot use Entra ID: third-party APIs and SaaS keys, partner systems and
-legacy protocols. TLS certificates are the other Key Vault content; they live in the shared `cert-` part of the vault
-([section 13](#certificates-issued-centrally-distributed-through-key-vault)).
+legacy protocols. TLS certificates are **not** in the zone vaults; they live in the environment's platform Key Vault
+([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)).
 Such a secret always lives in the zone's **Key Vault** – never in Git, Helm values or a Kubernetes `Secret` created by
 hand.
 
@@ -219,7 +227,8 @@ Each application gets its own namespace(s) inside a zone, with a baseline policy
    only from the node subnets of the same zone in the stateless clusters (Cilium CIDR policy; the applications'
    `LoadBalancer` Services use `externalTrafficPolicy: Local` so the client IP is preserved);
 4. allow traffic within the namespace;
-5. allow egress only to the zone Key Vault private endpoint and approved FQDNs (via firewall).
+5. allow egress only to the zone Key Vault private endpoint, the platform Key Vault private endpoint (only pods that
+   need a certificate) and approved FQDNs (via firewall).
 
 Applications in the same zone therefore cannot talk to each other unless an explicit policy pair is agreed.
 Kubernetes RBAC is namespace-scoped (Entra ID groups per application team), plus ResourceQuota/LimitRange per
@@ -331,10 +340,11 @@ endpoints are not enabled in the stateful cluster; the Azure Policy add-on is th
 procedures cannot be rehearsed there; they can use smaller VM sizes and lower autoscaler limits.
 
 - **Clusters are cattle, built by IaC.** An environment module creates what all clusters of an environment share
-  and what must survive a cluster rebuild: the Key Vaults per zone (with their certificates and secrets), the
-  application managed identities, the ACR and the Azure Policy assignments. Two cluster modules (stateless,
-  stateful) with `env` and `az` as parameters create the VNet, cluster, node pools, private endpoints to the shared
-  Key Vaults, the federated credentials and – in stateless clusters – the Flux bootstrap. The IaC also writes a
+  and what must survive a cluster rebuild: the Key Vaults per zone (with the application secrets), the platform Key
+  Vault (with the environment's certificates and their role assignments), the application managed identities, the
+  ACR and the Azure Policy assignments. Two cluster modules (stateless, stateful) with `env` and `az` as parameters
+  create the VNet, cluster, node pools, private endpoints to the shared zone and platform Key Vaults, the federated
+  credentials and – in stateless clusters – the Flux bootstrap. The IaC also writes a
   `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`) that Flux uses for substitutions (the
   stateful pipeline sets the same variables itself).
 - **Everything inside a cluster comes from Git** – via Flux in the stateless clusters and via the deployment pipeline
@@ -515,8 +525,8 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
   can never attach to another zone's gateway.
 - **Internal DNS names with Let's Encrypt certificates.** Each zone has its own DNS name space, e.g.
   `*.ext-fi.prd.example.com`, resolved only by the Private DNS zone in the hub (split horizon: the name has no
-  public A record). Traefik serves the zone's wildcard certificate from Key Vault
-  ([below](#certificates-issued-centrally-distributed-through-key-vault)). Because the certificate is publicly
+  public A record). Traefik serves the zone's wildcard certificate from the platform Key Vault
+  ([below](#certificates-issued-centrally-distributed-through-the-platform-key-vault)). Because the certificate is publicly
   trusted, Application Gateway / Front Door validate the backend without uploading custom root certificates, and
   clients inside the corporate network need no private CA.
 - **No non-TLS traffic.** Traefik has only the `websecure` entry point on 443; port 80 is not exposed at all (no
@@ -539,35 +549,54 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
 - **The application handles TLS itself** (TLS 1.2+), which is an onboarding requirement for the stateful cluster: it
   terminates TLS on its listener and reloads the certificate on rotation. Most products that end up here (databases,
   brokers, search engines) support this natively.
-- The application uses the **same zone certificate from Key Vault** as Traefik (see below), mounted as PEM files
+- The application uses the **same zone certificate from the platform Key Vault** as Traefik (see below), mounted as PEM files
   through the Secrets Store CSI driver; it is reached under a name in the zone's domain, e.g.
   `app-x.int-fi.prd.example.com`.
 - Clients in the stateless clusters connect with TLS and verify the name; plain-text ports are not allowed by the
   Firewall rules between frontend and backend.
 
-### Certificates issued centrally, distributed through Key Vault
+### Certificates issued centrally, distributed through the platform Key Vault
 
 No cluster issues certificates – there is no cert-manager or other ACME client in any cluster, so no cluster needs
 Internet access to Let's Encrypt or write access to DNS.
 
+- **One platform Key Vault per environment.** `kv-<env>-platform` (RBAC permission model, public access disabled,
+  purge protection) exists exactly once per environment, is created by the environment IaC module and is shared by all
+  clusters of that environment. It holds **all certificates of the environment** – the zone vaults hold none – plus
+  the renewal job's ACME account key. Every cluster spoke has one private endpoint to it in a small shared subnet
+  `snet-platform-pe` (control plane zone, [picture 2](#2-network-layout)).
+- **Certificates per environment.** Each environment gets its own certificates in its own vault; nothing is copied
+  between environments, and a dev or acc identity can never read a prd key:
+
+  | Environment | Platform Key Vault | Certificates (one wildcard per isolation zone) |
+  |---|---|---|
+  | dev | `kv-dev-platform` | `cert-int-fi-wildcard` (`*.int-fi.dev.example.com`), `cert-int-se-wildcard`, `cert-ext-fi-wildcard`, `cert-ext-se-wildcard` |
+  | acc | `kv-acc-platform` | the same names for `*.<zone>.acc.example.com` |
+  | prd | `kv-prd-platform` | the same names for `*.<zone>.prd.example.com` |
+
+  The certificate *names* are identical in every environment, so the fleet manifests (`SecretProviderClass`) need
+  only the vault name `kv-${ENV}-platform`, substituted from `cluster-vars`. An application that must not share the zone key gets its
+  own certificate `cert-<zone>-<app>` in the same vault.
 - **One renewal job per environment** runs in the management network (scheduled pipeline or Container Apps job) with
-  its own managed identity. It requests the certificates from Let's Encrypt with the **DNS-01** challenge, writes only
-  the `_acme-challenge` TXT records into a public Azure DNS validation zone (the zone names are delegated to it by
-  CNAME, so the job cannot change any other record) and **imports** the result into the Key Vaults as Key Vault
-  certificates. It renews 30 days before expiry; Key Vault `CertificateNearExpiry` events alert the platform team if
-  renewal fails.
-- **One wildcard certificate per isolation zone and environment**, e.g. `*.ext-fi.prd.example.com`, stored in that
-  zone's vault as `cert-ext-fi-wildcard`. The vault is shared by the environment, so **all clusters use the same
-  certificate**: Traefik in `sl-az1`, `sl-az2`, `sl-az3` and the TLS-terminating applications in `sf`. A rebuilt
-  cluster needs no new certificate, and Let's Encrypt rate limits are never an issue (a handful of certificates per
-  environment).
-- **The `cert-` part of the vault is available to every application that needs a certificate.** Key Vault exposes a
-  certificate together with its private key as a secret of the same name, so the ABAC conditions of
-  [section 6](#6-workload-identity-first-key-vault-secrets-only-when-needed) cover certificates too: identities that need
-  a certificate (each zone's Traefik, stateful applications, any application with a client or server certificate)
-  get a second **Key Vault Secrets User** assignment with condition `StringStartsWith 'cert-'`. They can read all
-  certificates of their zone, but still not other applications' `<app>-` secrets. Requesting it is a flag in the
-  application onboarding.
+  its own managed identity, which has **Key Vault Certificates Officer and Key Vault Secrets Officer (for the ACME
+  account key) on its own environment's platform vault only**.
+  It requests the certificates from Let's Encrypt with the **DNS-01** challenge, writes only the `_acme-challenge` TXT
+  records into a public Azure DNS validation zone (the zone names are delegated to it by CNAME, so the job cannot
+  change any other record) and **imports** the result into the platform vault as Key Vault certificates. It renews
+  30 days before expiry; Key Vault `CertificateNearExpiry` events alert the platform team if renewal fails. The jobs
+  are rolled out dev → acc → prd like any other platform change.
+- **All clusters of an environment use the same certificate**: Traefik in `sl-az1`, `sl-az2`, `sl-az3` and the
+  TLS-terminating applications in `sf`. A rebuilt cluster needs no new certificate, and Let's Encrypt rate limits are
+  never an issue (a handful of certificates per environment).
+- **Access with plain Azure RBAC, no ABAC.** Key Vault RBAC roles can be assigned on a single certificate (its secret
+  object) instead of the whole vault. Every identity that needs a certificate – each zone's Traefik, stateful
+  applications, any application with a client or server certificate – gets **Key Vault Secrets User** scoped to
+  `kv-<env>-platform/secrets/cert-<zone>-…` of *its own zone*. Key Vault exposes a certificate together with its
+  private key as a secret of the same name, which is what the Secrets Store CSI driver reads. No identity has a role on
+  the vault scope except the renewal job and the platform team (PIM). The role assignments are created by the
+  environment IaC module from the application onboarding (a "needs certificate" flag), so a certificate must exist
+  before it can be assigned – the module creates it with a short-lived self-signed placeholder (issuer `Self`) that
+  the job replaces on its first run.
 - **Delivery and rotation** with the Secrets Store CSI driver (rotation enabled, 2-minute poll):
   - Traefik: a `SecretProviderClass` in `<zone>-ingress` syncs the certificate into a `kubernetes.io/tls` Secret, which
     the zone's `Gateway` listener references; Traefik reloads it when the Secret changes.
@@ -578,8 +607,11 @@ Internet access to Let's Encrypt or write access to DNS.
   - Certificates appear in public Certificate Transparency logs; the per-zone wildcard keeps application names out
     of them.
   - The wildcard private key is shared by everything in the zone that needs a certificate. Its blast radius is one
-    zone of one environment, and it is renewed every 60 days. An application that must not share a key can get its
-    own certificate (`cert-<app>-…`) from the same job.
+    zone of one environment, and it is renewed every 60 days.
+  - The platform vault is shared by all zones of an environment, so zone separation for certificates rests on the
+    per-certificate role assignments (and Cilium egress policy) rather than on a separate vault. Microsoft recommends
+    vault-level assignments in general; per-object assignments are fine here because the number of certificates and
+    consumers is small, but they count towards the subscription's role assignment limit.
   - Egress `acme-v02.api.letsencrypt.org` is allowed only for the renewal job, not for any cluster.
 
 ## 14. Policy enforcement with the Azure Policy add-on
@@ -650,6 +682,8 @@ Limits of the add-on and how the design handles them:
   stateful cluster could be left out of an environment entirely.
 - Is one wildcard certificate per zone and environment acceptable, or do some applications need their own
   certificate (own key)?
+- One platform Key Vault per environment shared by all zones (current draft), or one certificate vault per zone and
+  environment if a separate vault per country is a hard requirement for keys too?
 - DNS naming for the internal Let's Encrypt names (`<zone>.<env>.example.com`) and who owns the public
   validation zone.
 - "No Internet" for the stateful cluster: are the Azure Policy add-on FQDNs acceptable as a second exception next to

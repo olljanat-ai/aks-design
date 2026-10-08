@@ -28,7 +28,7 @@ flowchart TB
             db["Azure SQL / PostgreSQL<br/>(zone-redundant)"]
             st["Storage (ZRS), Service Bus,<br/>Event Hubs, Cosmos DB"]
             acr["ACR Premium (zone-redundant)<br/>images, charts, Flux artifacts"]
-            kv["Key Vault per isolation zone"]
+            kv["Key Vault per isolation zone (app secrets)<br/>+ one platform Key Vault (certificates)"]
         end
     end
 
