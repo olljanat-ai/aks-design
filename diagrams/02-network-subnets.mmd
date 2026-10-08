@@ -1,47 +1,50 @@
 %% Subnet layout of the AKS spoke VNet. Every subnet has its own NSG and UDR.
+%% Pod subnets exist only in the stateful cluster (VNet CNI); stateless clusters use Azure CNI Overlay.
 flowchart TB
     subgraph VNET["AKS spoke VNet 10.10.0.0/16 (example addressing)"]
         direction TB
         subgraph ESE["Zone ext-se 10.10.64.0/20"]
             direction LR
             ese_n["snet-ext-se-nodes<br/>10.10.64.0/24"]
-            ese_p["snet-ext-se-pods<br/>10.10.68.0/22"]
+            ese_p["snet-ext-se-pods<br/>10.10.68.0/22<br/>stateful only (VNet CNI)"]
             ese_i["snet-ext-se-appgw<br/>10.10.72.0/24<br/>App Gateway WAF v2"]
             ese_pe["snet-ext-se-pe<br/>10.10.73.0/27<br/>Key Vault PE"]
         end
         subgraph EFI["Zone ext-fi 10.10.48.0/20"]
             direction LR
             efi_n["snet-ext-fi-nodes<br/>10.10.48.0/24"]
-            efi_p["snet-ext-fi-pods<br/>10.10.52.0/22"]
+            efi_p["snet-ext-fi-pods<br/>10.10.52.0/22<br/>stateful only (VNet CNI)"]
             efi_i["snet-ext-fi-appgw<br/>10.10.56.0/24<br/>App Gateway WAF v2"]
             efi_pe["snet-ext-fi-pe<br/>10.10.57.0/27<br/>Key Vault PE"]
         end
         subgraph ISE["Zone int-se 10.10.32.0/20"]
             direction LR
             ise_n["snet-int-se-nodes<br/>10.10.32.0/24"]
-            ise_p["snet-int-se-pods<br/>10.10.36.0/22"]
-            ise_i["snet-int-se-ingress<br/>10.10.40.0/27<br/>internal LB"]
+            ise_p["snet-int-se-pods<br/>10.10.36.0/22<br/>stateful only (VNet CNI)"]
+            ise_i["snet-int-se-ilb<br/>10.10.40.0/27<br/>internal LB: Traefik (stateless)<br/>or app Services (stateful)"]
             ise_pe["snet-int-se-pe<br/>10.10.41.0/27<br/>Key Vault PE"]
         end
         subgraph IFI["Zone int-fi 10.10.16.0/20"]
             direction LR
             ifi_n["snet-int-fi-nodes<br/>10.10.16.0/24"]
-            ifi_p["snet-int-fi-pods<br/>10.10.20.0/22"]
-            ifi_i["snet-int-fi-ingress<br/>10.10.24.0/27<br/>internal LB"]
+            ifi_p["snet-int-fi-pods<br/>10.10.20.0/22<br/>stateful only (VNet CNI)"]
+            ifi_i["snet-int-fi-ilb<br/>10.10.24.0/27<br/>internal LB: Traefik (stateless)<br/>or app Services (stateful)"]
             ifi_pe["snet-int-fi-pe<br/>10.10.25.0/27<br/>Key Vault PE"]
         end
         subgraph CP["Control plane zone 10.10.0.0/20"]
             direction LR
             s_api["snet-apiserver<br/>10.10.0.0/28<br/>delegated: Microsoft.ContainerService"]
             s_sysn["snet-system-nodes<br/>10.10.1.0/24"]
-            s_sysp["snet-system-pods<br/>10.10.4.0/22"]
+            s_sysp["snet-system-pods<br/>10.10.4.0/22<br/>stateful only (VNet CNI)"]
         end
     end
 
     rt["Route tables (one per zone)<br/>0.0.0.0/0 → Azure Firewall<br/>other zones' prefixes → Azure Firewall"]
     nsg["NSGs (one per subnet)<br/>default: deny VNet→VNet<br/>allow only mandatory flows"]
+    cni["Stateless clusters: Azure CNI Overlay<br/>pod CIDR outside the VNet, SNAT to node IP<br/>→ no pod subnets; VNet encryption on"]
     rt -.-> VNET
     nsg -.-> VNET
+    cni -.-> VNET
 
     classDef cp fill:#eceff1,stroke:#455a64,color:#000
     classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
@@ -50,4 +53,4 @@ flowchart TB
     class s_api,s_sysn,s_sysp cp
     class ifi_n,ifi_p,ifi_i,ifi_pe,ise_n,ise_p,ise_i,ise_pe int
     class efi_n,efi_p,efi_i,efi_pe,ese_n,ese_p,ese_i,ese_pe ext
-    class rt,nsg note
+    class rt,nsg,cni note

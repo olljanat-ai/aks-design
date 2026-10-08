@@ -11,7 +11,7 @@ flowchart LR
     subgraph Z["Zone int-fi"]
         direction TB
         n["Nodes<br/>snet-int-fi-nodes"]
-        p["Pods<br/>snet-int-fi-pods"]
+        p["Pods<br/>stateful: snet-int-fi-pods<br/>stateless: overlay, SNAT to node IP"]
         kv["Key Vault kv-int-fi<br/>(private endpoint)"]
     end
 

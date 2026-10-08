@@ -12,8 +12,8 @@ flowchart TB
 
     subgraph FRONT["Frontend network – stateless clusters, one per availability zone"]
         direction LR
-        sl1["<b>aks-&lt;env&gt;-sl-az1</b><br/>vnet-&lt;env&gt;-sl-az1<br/>all node pools in AZ 1<br/>zones int-fi, int-se, ext-fi, ext-se<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
-        sl2["<b>aks-&lt;env&gt;-sl-az2</b><br/>vnet-&lt;env&gt;-sl-az2<br/>all node pools in AZ 2<br/>identical apps and config<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
+        sl1["<b>aks-&lt;env&gt;-sl-az1</b><br/>vnet-&lt;env&gt;-sl-az1 (VNet encryption)<br/>all node pools in AZ 1<br/>zones int-fi, int-se, ext-fi, ext-se<br/>Azure CNI Overlay · Traefik Gateway API (HTTPS only)<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
+        sl2["<b>aks-&lt;env&gt;-sl-az2</b><br/>vnet-&lt;env&gt;-sl-az2 (VNet encryption)<br/>all node pools in AZ 2<br/>identical apps and config<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
         sl3["<b>aks-&lt;env&gt;-sl-az3</b> (optional)<br/>vnet-&lt;env&gt;-sl-az3<br/>all node pools in AZ 3"]
         sl1 ~~~ sl2 ~~~ sl3
     end
@@ -22,8 +22,8 @@ flowchart TB
 
     subgraph BACK["Backend network – no Internet route in either direction"]
         direction LR
-        sf["<b>aks-&lt;env&gt;-sf</b> (single cluster)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none"]
-        subgraph PAAS["Azure PaaS – private endpoints only"]
+        sf["<b>aks-&lt;env&gt;-sf</b> (single cluster, last option)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none<br/>Azure CNI (VNet) · no ingress / Gateway API<br/>internal LB Services · TLS by the application"]
+        subgraph PAAS["Azure PaaS – first choice for data, private endpoints only"]
             direction TB
             db["Azure SQL / PostgreSQL<br/>(zone-redundant)"]
             st["Storage (ZRS), Service Bus,<br/>Event Hubs, Cosmos DB"]
@@ -36,9 +36,9 @@ flowchart TB
 
     internet ==>|"HTTPS"| waf
     corp ==> agw_in
-    EDGE ==>|"backend pool = ingress ILB of every stateless cluster<br/>probe failure or weight 0 removes a cluster"| FRONT
+    EDGE ==>|"HTTPS · backend pool = Traefik ILB of every stateless cluster<br/>probe failure or weight 0 removes a cluster"| FRONT
     FRONT -->|"egress + east-west"| fw
-    fw -->|"only: stateful ingress ILB,<br/>PaaS private endpoints"| BACK
+    fw -->|"TLS only: PaaS private endpoints (preferred),<br/>stateful app internal LBs"| BACK
     sf --> PAAS
     BACK x-.-x|"⛔ blocked: no public IP, no outbound type,<br/>UDR 0/0 → Firewall deny-all"| blocked
 
