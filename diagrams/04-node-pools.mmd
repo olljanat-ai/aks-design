@@ -1,6 +1,6 @@
 %% Node pool per zone: scheduling isolation with labels, taints and admission control
 flowchart TB
-    adm["Admission control (Azure Policy / Gatekeeper or Kyverno)<br/>1. namespace must carry label platform/zone=&lt;zone&gt;<br/>2. mutate: pod gets nodeSelector + toleration of its namespace's zone<br/>3. validate: deny pods selecting or tolerating any other zone"]
+    adm["Admission control: OPA Gatekeeper (delivered by Flux)<br/>1. constraint: namespace must carry label platform/zone=&lt;zone&gt;<br/>2. Assign mutation per zone: pod gets nodeSelector + toleration of its namespace's zone<br/>3. constraint: deny pods selecting or tolerating any other zone"]
 
     subgraph NS["Namespaces"]
         direction LR

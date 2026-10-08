@@ -1,0 +1,56 @@
+%% Encryption in transit. Stateless: TLS ends at the zone's Traefik gateway (Let's Encrypt certificate for an internal
+%% name), node-to-node traffic is protected by Azure VNet encryption, so apps need no TLS, mTLS or service mesh.
+%% Stateful: no ingress at all, the application terminates TLS on its own internal load balancer.
+flowchart LR
+    client(("Client"))
+    le["Let's Encrypt<br/>ACME DNS-01"]
+    pubdns["Public Azure DNS zone<br/>_acme-challenge TXT only"]
+
+    subgraph EDGE["Traffic layer"]
+        agw["App Gateway / Front Door<br/>HTTPS listener only"]
+    end
+
+    subgraph SL["Stateless cluster · Azure CNI Overlay · VNet encryption between nodes"]
+        direction TB
+        cm["cert-manager<br/>wildcard cert per zone<br/>*.ext-fi.&lt;env&gt;.apps.example.com"]
+        tr["Traefik Gateway (zone ext-fi)<br/>websecure :443 only<br/>HSTS · no :80"]
+        subgraph N1["node A"]
+            app1["app-a pod<br/>plain HTTP"]
+        end
+        subgraph N2["node B"]
+            app2["app-a pod<br/>plain HTTP"]
+        end
+    end
+
+    subgraph SF["Stateful cluster · Azure CNI (VNet) · no ingress / Gateway API"]
+        direction TB
+        ilb["Internal LB Service<br/>snet-ext-fi-ilb"]
+        db["app-x pod<br/>terminates TLS itself<br/>cert &lt;app&gt;-tls from Key Vault (CSI)"]
+    end
+
+    paas["Azure PaaS<br/>private endpoint<br/>TLS enforced"]
+    plain["Plain HTTP"]:::off
+
+    client -->|"HTTPS"| agw
+    agw -->|"HTTPS, backend cert validated<br/>(publicly trusted)"| tr
+    tr -->|"HTTP inside the node"| app1
+    tr -->|"HTTP, encrypted on the wire<br/>by VNet encryption"| app2
+    app1 & app2 -->|"TLS via Firewall"| ilb --> db
+    app1 & app2 -->|"TLS via Firewall"| paas
+    cm -->|"via Firewall allow-list"| le
+    cm -->|"workload identity"| pubdns
+    cm -.->|"TLS secret"| tr
+    plain -.-x|"rejected: no listener, no LB port,<br/>Gatekeeper denies HTTP listeners"| tr
+
+    linkStyle 12 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
+
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
+    classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
+    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
+    classDef paas fill:#eceff1,stroke:#455a64,color:#000
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    classDef off fill:#ffebee,stroke:#c62828,color:#000,stroke-dasharray: 5 5
+    class agw hub
+    class cm,tr,app1,app2 sl
+    class ilb,db sf
+    class paas,le,pubdns paas
