@@ -36,6 +36,7 @@ flowchart TB
             s_api["snet-apiserver<br/>10.10.0.0/28<br/>delegated: Microsoft.ContainerService"]
             s_sysn["snet-system-nodes<br/>10.10.1.0/24"]
             s_sysp["snet-system-pods<br/>10.10.4.0/22<br/>stateful only (VNet CNI)"]
+            s_ppe["snet-platform-pe<br/>10.10.2.0/27<br/>platform Key Vault PE<br/>(certificates)"]
         end
     end
 
@@ -50,7 +51,7 @@ flowchart TB
     classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
     classDef ext fill:#fff3e0,stroke:#ef6c00,color:#000
     classDef note fill:#fffde7,stroke:#9e9d24,color:#000
-    class s_api,s_sysn,s_sysp cp
+    class s_api,s_sysn,s_sysp,s_ppe cp
     class ifi_n,ifi_p,ifi_i,ifi_pe,ise_n,ise_p,ise_i,ise_pe int
     class efi_n,efi_p,efi_i,efi_pe,ese_n,ese_p,ese_i,ese_pe ext
     class rt,nsg,cni note
