@@ -5,7 +5,8 @@ Design drafts for a large Azure Kubernetes Service (AKS) platform with strong is
 
 The platform runs **two types of clusters** – zonal **stateless** clusters in the frontend network and one
 zone-redundant **stateful** cluster in the Internet-less backend network – in **dev, acc and prd**, i.e. at least
-nine clusters kept in sync with **FluxCD**, with fully automated zero-downtime upgrades of applications and clusters.
+nine clusters kept in sync from one Git repository – the stateless clusters with **FluxCD**, the stateful cluster
+with **CI/CD pipelines** – with fully automated zero-downtime upgrades of applications and clusters.
 Data belongs in **Azure PaaS services**; the stateful cluster is the *last option*, used only when no suitable PaaS
 service exists or a special use case requires it. All admission policies are implemented with the AKS-native **Azure Policy add-on** (Gatekeeper managed by AKS).
 Pictures 1–7 describe what is *inside* one cluster; pictures 8–13 describe the fleet of clusters and how traffic is
@@ -32,8 +33,8 @@ encrypted.
 | R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names, distributed through Key Vault, and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
 | R10 | Stateful cluster spread over availability zones and running AKS LTS | Node pools per AZ 1/2/3, ZRS storage, Premium tier with Long Term Support |
 | R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, cluster autoscaler |
-| R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, wave-based Flux rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
-| R13 | dev, acc and prd environments kept in sync | 3 × 3 = 9 clusters from the same IaC modules, all in-cluster state from one Git repository via FluxCD ([picture 9](#9-environments-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-with-fluxcd)) |
+| R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, wave-based Flux rollout, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
+| R13 | dev, acc and prd environments kept in sync | 3 × 3 = 9 clusters from the same IaC modules, all in-cluster state from one Git repository: FluxCD in the stateless clusters, CI/CD pipeline in the stateful cluster ([picture 9](#9-environments-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
 | R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
 | R15 | Certificates distributed through Key Vault, shared by all clusters | Central renewal job issues one certificate per zone and environment into the zone's Key Vault; all clusters of the environment and every application that needs a certificate read it from the shared `cert-` part of the vault ([section 13](#certificates-issued-centrally-distributed-through-key-vault)) |
 
@@ -172,7 +173,8 @@ storage account keys for Azure services.
 
   "Local auth disabled" is enforced with Azure Policy on the resources, so a key-based fallback cannot be switched
   on later. Application configuration contains only endpoints and client IDs, which are not secrets.
-- **Platform components use workload identity too**: Flux (`OCIRepository` `provider: azure`), Traefik's certificate
+- **Platform components use workload identity too**: Flux (`OCIRepository` `provider: azure`), the stateful
+  deployment pipeline (workload identity federation, no client secret), Traefik's certificate
   mount (Secrets Store CSI driver), the Azure Monitor agent, external-dns. Images are pulled
   with the kubelet identity, which has only `AcrPull` on the environment's ACR – no `imagePullSecrets`.
 
@@ -307,6 +309,7 @@ the full load of the environment (N+1). Only the stateful spoke has pod subnets.
 | All nodes of the environment | ACR private endpoint | TCP 443 | Images, Helm charts, Flux OCI artifacts |
 | Stateful cluster | Frontend networks | – | **Blocked** – the backend never initiates connections to the frontend |
 | Stateful cluster | Internet | – | **Blocked** – no route, no outbound IP, Firewall deny-all |
+| Management VNet pipeline agents | Stateful API server (Private Link) | TCP 443 | Deployments to the stateful cluster ([section 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
 | Stateful nodes / pods | Microsoft Entra ID (`AzureActiveDirectory` service tag) | TCP 443 | Exception, needed for workload identity token exchange because Entra ID has no Private Link for sign-in – see open questions |
 | Stateful nodes (Azure Policy add-on) | `data.policy.core.windows.net`, `store.policy.core.windows.net`, `dc.services.visualstudio.com` | TCP 443 | Exception, Firewall application rules for these FQDNs only; the add-on has no Private Link ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
 
@@ -331,62 +334,101 @@ procedures cannot be rehearsed there; they can use smaller VM sizes and lower au
   and what must survive a cluster rebuild: the Key Vaults per zone (with their certificates and secrets), the
   application managed identities, the ACR and the Azure Policy assignments. Two cluster modules (stateless,
   stateful) with `env` and `az` as parameters create the VNet, cluster, node pools, private endpoints to the shared
-  Key Vaults, the federated credentials and the Flux bootstrap. The IaC also writes a
-  `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`) that Flux uses for substitutions.
-- **Everything inside a cluster comes from Git via Flux** – no manual `kubectl apply`; human write access in acc
-  and prd is read-only Kubernetes RBAC plus break-glass via PIM.
+  Key Vaults, the federated credentials and – in stateless clusters – the Flux bootstrap. The IaC also writes a
+  `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`) that Flux uses for substitutions (the
+  stateful pipeline sets the same variables itself).
+- **Everything inside a cluster comes from Git** – via Flux in the stateless clusters and via the deployment pipeline
+  in the stateful cluster; no manual `kubectl apply`. Human access in acc and prd is read-only Kubernetes RBAC plus
+  break-glass via PIM.
 - **Every environment has its own ACR** (in its backend spoke); the promotion pipeline imports the exact image
   digests from the previous environment's ACR (`az acr import`), so prd never pulls from the Internet.
 
-## 10. Keeping clusters in sync with FluxCD
+## 10. Keeping clusters in sync: Flux for stateless, pipelines for stateful
 
-![GitOps with Flux](images/10-gitops-flux.svg)
+![GitOps with Flux and the stateful pipeline](images/10-gitops-flux.svg)
 
-One **fleet repository** describes all nine clusters. Shared content lives once in `base`; cluster type and
-environment differences are Kustomize overlays:
+One **fleet repository** describes all clusters. Shared content lives once in `base`; cluster type and environment
+differences are Kustomize overlays. Both delivery mechanisms deploy the **same signed artifact** built from it:
 
 ```text
 fleet/
-├── clusters/                      # entry point of each cluster (Flux Kustomizations only)
-│   ├── dev/{sl-az1,sl-az2,sf}/
-│   ├── acc/{sl-az1,sl-az2,sf}/
-│   └── prd/{sl-az1,sl-az2,sl-az3,sf}/
+├── clusters/                      # entry point of each stateless cluster (Flux Kustomizations only)
+│   ├── dev/{sl-az1,sl-az2}/
+│   ├── acc/{sl-az1,sl-az2}/
+│   └── prd/{sl-az1,sl-az2,sl-az3}/
 ├── infrastructure/
 │   ├── base/                      # Cilium policies, Secrets Store CSI settings, monitoring
 │   ├── stateless/                 # Traefik + Gateways + certificate SecretProviderClass per zone, HPA/KEDA
-│   └── stateful/                  # storage classes (ZRS), operators (no ingress)
+│   └── stateful/                  # storage classes (ZRS), operators (no ingress) – applied by the pipeline
 └── apps/
     └── <app>/
         ├── base/
-        ├── stateless/{dev,acc,prd}/   # image digests + replicas/HPA per environment
-        └── stateful/{dev,acc,prd}/
+        ├── stateless/{dev,acc,prd}/   # image digests + replicas/HPA per environment – Flux
+        └── stateful/{dev,acc,prd}/    # applied by the pipeline
 ```
 
-- **Flux installation**: upstream Flux, installed by the cluster IaC from the environment's ACR – same version on all
-  clusters, upgraded like any other platform component (dev first). The AKS GitOps extension (`microsoft.flux`) is
-  [not supported on network isolated clusters](https://learn.microsoft.com/en-us/azure/aks/concepts-network-isolated#using-features-add-ons-and-extensions-requiring-egress),
-  so it cannot be used in the stateful cluster, and one installation method everywhere keeps the clusters identical.
+**Why two mechanisms.** The stateless clusters are many, identical and rebuilt often: a pull-based reconcile loop
+brings a fresh cluster to the desired state without anyone pushing to it, and corrects drift continuously. The
+stateful cluster is a single, long-lived cluster whose changes must be **ordered, gated and observed** (StatefulSet
+rollouts, operator upgrades, schema steps) – a pipeline with explicit stages, approvals and a visible run history fits
+better, and the Internet-less cluster runs one component less.
+
+**Common: build and publish**
+
 - **Policies are not in the fleet repository**: they are Azure Policy definitions and assignments in the IaC
   repository ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)); CI still tests the rendered fleet
   manifests against the same constraint templates.
-- **Source = OCI artifact in the environment's ACR, not Git.** The stateful cluster cannot reach a Git server on the
-  Internet, and using the same mechanism everywhere keeps all clusters identical. On merge to `main`, CI validates
-  (`kustomize build`, kubeconform, policy tests), runs `flux push artifact oci://<acr>.azurecr.io/fleet:<git-sha>`,
-  signs it with cosign and tags it. Flux's `OCIRepository` pulls it through the ACR private endpoint with workload
-  identity (`provider: azure`) and verifies the signature.
-- **Order inside a cluster**: Kustomization `dependsOn` chain `infra-controllers` → `infra-configs` (CRDs, Cilium
-  policies) → `apps`, each with `wait: true` and health checks, `prune: true` to remove anything deleted from Git.
-- **Waves inside an environment**: `sl-az1` follows tag `<env>-wave1`; `sl-az2`, `sl-az3` and `sf` follow
-  `<env>-wave2`. CI moves `wave2` only after all wave 1 Kustomizations are `Ready` and the error-rate / latency checks
-  pass, so a bad change never reaches every stateless cluster at once. Rollback = move the tag back.
+- **Artifact = OCI artifact in the environment's ACR.** On merge to `main`, CI validates (`kustomize build`,
+  kubeconform, policy tests), runs `flux push artifact oci://<acr>.azurecr.io/fleet:<git-sha>`, signs it with cosign
+  and tags it. Signed, immutable and served from the ACR private endpoint, it is what both Flux and the stateful
+  pipeline deploy.
 - **Promotion between environments** is a pull request that copies the tested image digests and configuration from
   the `dev` overlay to `acc`, then to `prd` (generated by the pipeline, approved by humans for prd).
+
+**Stateless clusters: FluxCD**
+
+- **Flux installation**: the AKS GitOps extension (`microsoft.flux`), installed by the cluster IaC, so Microsoft
+  manages its lifecycle like the Azure Policy add-on. The stateless clusters are not network isolated; the cluster
+  extension FQDNs (`<region>.dp.kubernetesconfiguration.azure.com`) are on their Firewall allow-list. (The extension is
+  [not supported on network isolated clusters](https://learn.microsoft.com/en-us/azure/aks/concepts-network-isolated#using-features-add-ons-and-extensions-requiring-egress),
+  which no longer matters because the stateful cluster does not run Flux.)
+- Flux's `OCIRepository` pulls the artifact through the ACR private endpoint with workload identity
+  (`provider: azure`) and verifies the cosign signature.
+- **Order inside a cluster**: Kustomization `dependsOn` chain `infra-controllers` → `infra-configs` (CRDs, Cilium
+  policies) → `apps`, each with `wait: true` and health checks, `prune: true` to remove anything deleted from Git.
+- **Waves**: `sl-az1` follows tag `<env>-wave1`; `sl-az2` and `sl-az3` follow `<env>-wave2`. CI moves `wave2` only
+  after all wave 1 Kustomizations are `Ready` and the error-rate / latency checks pass, so a bad change never reaches
+  every stateless cluster at once. Rollback = move the tag back.
 - **Drift** is corrected on every reconcile (interval 10 min, alerts to the platform channel through Flux
   notification-controller).
 
+**Stateful cluster: CI/CD pipeline**
+
+- **Where it runs**: self-hosted agents in the management VNet – the only network that reaches the private API
+  server ([picture 3](#3-control-plane)). The cluster itself needs nothing new: no Git, no reconcile controller, no
+  extra egress.
+- **Identity**: workload identity federation from the pipeline to a managed identity per environment (no client
+  secret). Azure RBAC for Kubernetes gives it write access only to the stateful cluster, scoped to the platform and
+  application namespaces; humans stay read-only.
+- **Stages** of one run, for a given artifact tag:
+  1. pull `fleet:<git-sha>` from the ACR and verify the cosign signature – exactly the content that Flux deploys;
+  2. check that all assigned Azure Policy constraints are present in the cluster (policy readiness gate);
+  3. `kubectl diff` of `infrastructure/stateful`, then `apps/*/stateful/<env>`, published as the run's change summary;
+  4. approval (prd always, acc for operator or CRD changes);
+  5. server-side apply with pruning (`kubectl apply --server-side --prune --applyset=…`), infrastructure first;
+  6. wait for StatefulSet / operator rollouts (`kubectl rollout status`, operator health), optionally partitioned
+     canary first; run smoke tests against the applications' internal load balancers;
+  7. on failure stop and alert; rollback = re-run the pipeline with the previous artifact tag (data migrations are
+     forward-only, see the compatibility rule in [section 11](#11-zero-downtime-application-upgrades)).
+- **Order inside an environment**: the release pipeline runs the **stateful stage before the stateless waves** –
+  providers before consumers. Stateful changes must be backwards compatible with the running stateless version anyway
+  (expand → migrate → contract).
+- **Drift**: there is no reconcile loop, so a scheduled run (nightly) does steps 1–3 only and alerts on any
+  difference. With read-only human access, drift can only come from break-glass actions.
+
 ## 11. Zero-downtime application upgrades
 
-The same rules apply in every cluster and are **enforced by admission policy** (delivered by Flux), so no
+The same rules apply in every cluster and are **enforced by admission policy** (Azure Policy add-on), so no
 application can be deployed in a way that breaks a zero-downtime rollout or a node drain:
 
 | Guardrail | Stateless | Stateful |
@@ -569,8 +611,8 @@ Limits of the add-on and how the design handles them:
 | Limit | Consequence in this design |
 |---|---|
 | Needs `data.policy.core.windows.net`, `store.policy.core.windows.net`, `dc.services.visualstudio.com` (+ Entra ID); no Private Link | Firewall application rules for these FQDNs, also from the stateful cluster (exception to "no Internet", see [flows](#flows-between-frontend-and-backend)) |
-| Custom definitions cannot use Gatekeeper data replication (no lookups of other objects) | Zone rules match the namespace name prefix `<zone>-*`; "PDB exists for every Deployment / StatefulSet" is checked in CI on the rendered manifests, because Flux only applies validated artifacts |
-| Policies are synced from Azure every 15 minutes | The cluster bootstrap keeps the Flux `apps` Kustomization suspended until all assigned constraint templates and constraints are present in the cluster |
+| Custom definitions cannot use Gatekeeper data replication (no lookups of other objects) | Zone rules match the namespace name prefix `<zone>-*`; "PDB exists for every Deployment / StatefulSet" is checked in CI on the rendered manifests, because Flux and the stateful pipeline only apply validated artifacts |
+| Policies are synced from Azure every 15 minutes | The stateless cluster bootstrap keeps the Flux `apps` Kustomization suspended until all assigned constraint templates and constraints are present in the cluster; the stateful pipeline checks the same before every run |
 | Gatekeeper config cannot be changed | No custom Gatekeeper settings; defaults are fine for this design |
 | Max 10 000 pods per cluster | Well above the expected size; monitored |
 

@@ -1,9 +1,10 @@
-%% FluxCD keeps all clusters in sync. Git is never reached by the clusters: CI publishes the fleet repository as
-%% signed OCI artifacts into each environment's private ACR, so the Internet-less stateful cluster works the same way.
+%% One fleet repository, one signed OCI artifact per commit in each environment's private ACR.
+%% Stateless clusters pull it with FluxCD in waves; the stateful cluster gets it from a CI/CD pipeline that runs on
+%% agents in the management network (the only network that reaches its private API server).
 flowchart LR
     subgraph GIT["Fleet Git repository"]
         direction TB
-        g_cl["clusters/&lt;env&gt;/&lt;cluster&gt;/<br/>entry point per cluster"]
+        g_cl["clusters/&lt;env&gt;/sl-az&lt;N&gt;/<br/>Flux entry point per stateless cluster"]
         g_inf["infrastructure/<br/>base · stateless · stateful"]
         g_app["apps/&lt;app&gt;/<br/>base · stateless · stateful · overlays per env"]
     end
@@ -13,29 +14,38 @@ flowchart LR
     subgraph ENV["One environment"]
         direction TB
         acr["ACR (private endpoint)<br/>oci://acr&lt;env&gt;/fleet:&lt;sha&gt;<br/>tags: &lt;env&gt;-wave1, &lt;env&gt;-wave2"]
+        subgraph MG["Management VNet"]
+            sfp["Stateful deployment pipeline<br/>self-hosted agent · workload identity federation<br/>verify signature → policy gate → kubectl diff<br/>→ approval → server-side apply → rollout checks"]
+        end
+        f3["aks-&lt;env&gt;-sf<br/>no Flux"]
         subgraph W1["Wave 1"]
             f1["Flux in aks-&lt;env&gt;-sl-az1<br/>OCIRepository tag &lt;env&gt;-wave1"]
         end
         subgraph W2["Wave 2"]
             f2["Flux in aks-&lt;env&gt;-sl-az2 (and az3)<br/>OCIRepository tag &lt;env&gt;-wave2"]
-            f3["Flux in aks-&lt;env&gt;-sf<br/>OCIRepository tag &lt;env&gt;-wave2"]
         end
     end
 
     gate{"Wave 1 healthy?<br/>Kustomization Ready,<br/>SLO / error-rate checks"}
 
-    GIT -->|"merge to main"| ci -->|"push + tag &lt;env&gt;-wave1"| acr
+    GIT -->|"merge to main"| ci -->|"push"| acr
+    ci -->|"1. stateful stage first"| sfp
+    acr -->|"pull + verify"| sfp
+    sfp -->|"Private Link to API server"| f3
+    sfp -->|"2. success: tag &lt;env&gt;-wave1"| acr
     acr -->|"pull via workload identity<br/>verify cosign signature"| f1
     f1 --> gate
-    gate -->|"yes: CI moves tag &lt;env&gt;-wave2"| acr
+    gate -->|"3. yes: CI moves tag &lt;env&gt;-wave2"| acr
     gate -.->|"no: stop, revert tag"| ci
-    acr --> f2 & f3
+    acr --> f2
 
     classDef note fill:#fffde7,stroke:#9e9d24,color:#000
     classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
     classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
     classDef paas fill:#eceff1,stroke:#455a64,color:#000
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
     class g_cl,g_inf,g_app,ci note
     class f1,f2 sl
     class f3 sf
+    class sfp hub
     class acr paas

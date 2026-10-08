@@ -23,7 +23,7 @@ flowchart TB
         p1 ~~~ p2 ~~~ p4 ~~~ p3
     end
 
-    src -.->|"build + reconcile"| DEV
+    src -.->|"build (IaC) + deploy<br/>(Flux: stateless · pipeline: stateful)"| DEV
     DEV ==>|"promote: automated tests passed<br/>(same image digests, same Flux artifact)"| ACC
     ACC ==>|"promote: acceptance passed<br/>+ change approval"| PRD
 
