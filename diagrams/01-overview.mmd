@@ -1,0 +1,54 @@
+%% High-level landing zone: hub, management network and the AKS spoke with isolation zones
+flowchart TB
+    internet(("Internet"))
+    onprem["On-premises /<br/>corporate network"]
+
+    subgraph HUB["Hub VNet (connectivity subscription)"]
+        direction LR
+        gw["VPN / ExpressRoute GW"]
+        fw["Azure Firewall Premium<br/>egress + east-west inspection"]
+        dns["Private DNS Resolver<br/>+ Private DNS zones"]
+        bastion["Azure Bastion"]
+    end
+
+    subgraph MGMT["Management VNet"]
+        direction TB
+        jump["Jump hosts /<br/>self-hosted CI agents"]
+        pe_api["Private Endpoint<br/>→ API server"]
+    end
+
+    subgraph SPOKE["AKS spoke VNet (one AKS cluster)"]
+        direction LR
+        subgraph CP["Control plane zone"]
+            direction TB
+            api["API server<br/>(VNet-integrated,<br/>delegated subnet)"]
+            sys["System node pool<br/>CoreDNS, metrics-server,<br/>CSI, Cilium operator"]
+        end
+        subgraph INT["Internal workloads"]
+            direction TB
+            intfi["int-fi<br/>subnets · node pool · Key Vault"]
+            intse["int-se<br/>subnets · node pool · Key Vault"]
+        end
+        subgraph EXT["External workloads"]
+            direction TB
+            extfi["ext-fi<br/>subnets · node pool · Key Vault<br/>App Gateway WAF"]
+            extse["ext-se<br/>subnets · node pool · Key Vault<br/>App Gateway WAF"]
+        end
+    end
+
+    onprem --- gw
+    internet ---|"allow-listed FQDNs<br/>(egress)"| fw
+    HUB ===|"VNet peering"| MGMT
+    HUB ===|"VNet peering<br/>UDR 0.0.0.0/0 → Firewall<br/>from every subnet"| SPOKE
+    jump --> pe_api -.->|"Private Link"| api
+    internet ==>|"HTTPS (WAF)"| EXT
+    fw ==>|"corporate users<br/>via Firewall"| INT
+
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef ext fill:#fff3e0,stroke:#ef6c00,color:#000
+    class fw,dns,gw,bastion,jump,pe_api hub
+    class api,sys cp
+    class intfi,intse int
+    class extfi,extse ext
