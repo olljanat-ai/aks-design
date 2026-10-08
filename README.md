@@ -7,7 +7,7 @@ The platform runs **two types of clusters** – zonal **stateless** clusters in 
 zone-redundant **stateful** cluster in the Internet-less backend network – in **dev, acc and prd**, i.e. at least
 nine clusters kept in sync with **FluxCD**, with fully automated zero-downtime upgrades of applications and clusters.
 Data belongs in **Azure PaaS services**; the stateful cluster is the *last option*, used only when no suitable PaaS
-service exists or a special use case requires it. All admission policies are implemented with **OPA Gatekeeper**.
+service exists or a special use case requires it. All admission policies are implemented with the AKS-native **Azure Policy add-on** (Gatekeeper managed by AKS).
 Pictures 1–7 describe what is *inside* one cluster; pictures 8–13 describe the fleet of clusters and how traffic is
 encrypted.
 
@@ -29,21 +29,22 @@ encrypted.
 | R8a | Stateful cluster is the last option | Placement order stateless cluster → Azure PaaS → stateful cluster; the stateful cluster needs a documented exception ([where does a workload run](#where-does-a-workload-run)) |
 | R9 | Stateful cluster exists once, in the backend network with the Azure PaaS services, no Internet connectivity at all | Backend spoke with PaaS private endpoints; network isolated AKS (outbound type `none`), no public IPs, Firewall deny-all for backend prefixes |
 | R9a | Stateful cluster: VNet-integrated CNI, no ingress controller / Gateway API, applications handle TLS | Azure CNI (VNet, dynamic pod IP allocation) powered by Cilium; applications are published with internal `LoadBalancer` Services and terminate TLS themselves ([section 13](#13-encryption-in-transit-and-tls)) |
-| R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
+| R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names, distributed through Key Vault, and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
 | R10 | Stateful cluster spread over availability zones and running AKS LTS | Node pools per AZ 1/2/3, ZRS storage, Premium tier with Long Term Support |
 | R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, cluster autoscaler |
 | R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, wave-based Flux rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
 | R13 | dev, acc and prd environments kept in sync | 3 × 3 = 9 clusters from the same IaC modules, all in-cluster state from one Git repository via FluxCD ([picture 9](#9-environments-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-with-fluxcd)) |
-| R14 | One policy engine | OPA Gatekeeper (upstream, delivered by Flux) in every cluster; Azure Policy only for Azure resources ([section 14](#14-policy-enforcement-with-gatekeeper)) |
+| R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
+| R15 | Certificates distributed through Key Vault, shared by all clusters | Central renewal job issues one certificate per zone and environment into the zone's Key Vault; all clusters of the environment and every application that needs a certificate read it from the shared `cert-` part of the vault ([section 13](#certificates-issued-centrally-distributed-through-key-vault)) |
 
 **Isolation zone** = one *type* = one combination of exposure × country:
 
-| Zone | Exposure | Country | Node pool | Key Vault | Subnets |
+| Zone | Exposure | Country | Node pool | Key Vault (one per environment) | Subnets |
 |---|---|---|---|---|---|
-| `int-fi` | internal | FI | `intfi` | `kv-int-fi` | `snet-int-fi-*` |
-| `int-se` | internal | SE | `intse` | `kv-int-se` | `snet-int-se-*` |
-| `ext-fi` | external | FI | `extfi` | `kv-ext-fi` | `snet-ext-fi-*` |
-| `ext-se` | external | SE | `extse` | `kv-ext-se` | `snet-ext-se-*` |
+| `int-fi` | internal | FI | `intfi` | `kv-<env>-int-fi` | `snet-int-fi-*` |
+| `int-se` | internal | SE | `intse` | `kv-<env>-int-se` | `snet-int-se-*` |
+| `ext-fi` | external | FI | `extfi` | `kv-<env>-ext-fi` | `snet-ext-fi-*` |
+| `ext-se` | external | SE | `extse` | `kv-<env>-ext-se` | `snet-ext-se-*` |
 
 Adding a country adds two zones (`int-xx`, `ext-xx`) following the same pattern.
 
@@ -108,10 +109,11 @@ no DNS). The system node pool (tainted `CriticalAddonsOnly`) runs only platform 
 ![Node pools](images/04-node-pools.svg)
 
 One node pool per zone, placed in that zone's subnets and tainted `platform/zone=<zone>:NoSchedule`.
-Every namespace carries a `platform/zone` label; Gatekeeper injects the matching `nodeSelector` and
-toleration into every pod (one `Assign` mutation per zone, matched by `namespaceSelector`) and **rejects** pods that
-try to select or tolerate another zone (constraint comparing the pod with its namespace's label; namespaces are
-synced into the Gatekeeper cache). Only platform
+Application namespaces are named `<zone>-<app>` and carry the matching `platform/zone` label. The Azure Policy
+add-on injects the zone's `nodeSelector` and toleration into every pod (one mutation definition per zone, matched by
+the namespace prefix `<zone>-*`) and **rejects** pods that try to select or tolerate another zone. The checks use
+the namespace *name*, not a lookup of the namespace's labels, because custom Azure Policy definitions cannot use
+Gatekeeper data replication; a separate policy makes sure the label of a namespace matches its name prefix. Only platform
 DaemonSets (Cilium, CSI drivers, monitoring) run on all pools.
 
 Note: the kubelet identity is cluster-wide in AKS, so it is **never** granted access to Key Vaults – workloads
@@ -170,19 +172,21 @@ storage account keys for Azure services.
 
   "Local auth disabled" is enforced with Azure Policy on the resources, so a key-based fallback cannot be switched
   on later. Application configuration contains only endpoints and client IDs, which are not secrets.
-- **Platform components use workload identity too**: Flux (`OCIRepository` `provider: azure`), cert-manager (DNS-01),
-  the Secrets Store CSI driver (per application identity), the Azure Monitor agent, external-dns. Images are pulled
+- **Platform components use workload identity too**: Flux (`OCIRepository` `provider: azure`), Traefik's certificate
+  mount (Secrets Store CSI driver), the Azure Monitor agent, external-dns. Images are pulled
   with the kubelet identity, which has only `AcrPull` on the environment's ACR – no `imagePullSecrets`.
 
 ### Secrets only when needed
 
-A secret is allowed only when the target cannot use Entra ID: third-party APIs and SaaS keys, partner systems, legacy
-protocols, and the TLS certificates of the stateful applications ([section 13](#13-encryption-in-transit-and-tls)).
+A secret is allowed only when the target cannot use Entra ID: third-party APIs and SaaS keys, partner systems and
+legacy protocols. TLS certificates are the other Key Vault content; they live in the shared `cert-` part of the vault
+([section 13](#certificates-issued-centrally-distributed-through-key-vault)).
 Such a secret always lives in the zone's **Key Vault** – never in Git, Helm values or a Kubernetes `Secret` created by
 hand.
 
-Each zone has its **own Key Vault** (RBAC permission model, public access disabled, private endpoint only in the
-zone's `snet-*-pe`). Inside a zone's vault, applications share the vault but are separated with
+Each zone has its **own Key Vault per environment** (`kv-<env>-<zone>`, RBAC permission model, public access
+disabled), shared by all clusters of the environment, with a private endpoint in the zone's `snet-<zone>-pe` of every
+cluster spoke. Inside a zone's vault, applications share the vault but are separated with
 [Azure ABAC conditions](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-abac):
 
 - The application's workload identity gets **Key Vault Secrets User** on the zone vault with condition
@@ -191,8 +195,9 @@ zone's `snet-*-pe`). Inside a zone's vault, applications share the vault but are
   `@Request[...secrets:name]` for `setSecret`; rotation is owned by the application team (expiry dates set, Event
   Grid `SecretNearExpiry` alerts).
 - Secrets are mounted as **files** with the Secrets Store CSI driver; syncing them into Kubernetes `Secret` objects
-  (`secretObjects`) is rejected by Gatekeeper, as are hand-made `Opaque` Secrets in application namespaces
-  ([section 14](#14-policy-enforcement-with-gatekeeper)).
+  (`secretObjects`) is rejected by policy (only the TLS certificate in `<zone>-ingress` is synced, for Traefik), as
+  are hand-made `Opaque` Secrets in application namespaces
+  ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)).
 
 Constraints to keep in mind: Key Vault ABAC is **preview**, supports **secrets only** (not keys/certificates
 operations) and only **vault name + secret name** attributes, and lowercase values. Therefore the secret naming
@@ -243,7 +248,7 @@ first option that fits:
 
 A workload in the stateful cluster needs a documented exception (why 1 and 2 do not fit, owner, exit plan) approved by
 the platform team; the exception is the label `platform/stateful-exception=<ticket>` on its namespace, required by a
-Gatekeeper constraint. The exceptions are reviewed when new PaaS services become available. The fewer workloads the
+policy. The exceptions are reviewed when new PaaS services become available. The fewer workloads the
 stateful cluster runs, the smaller its blast radius and upgrade risk.
 
 ### Comparison
@@ -302,11 +307,11 @@ the full load of the environment (N+1). Only the stateful spoke has pod subnets.
 | All nodes of the environment | ACR private endpoint | TCP 443 | Images, Helm charts, Flux OCI artifacts |
 | Stateful cluster | Frontend networks | – | **Blocked** – the backend never initiates connections to the frontend |
 | Stateful cluster | Internet | – | **Blocked** – no route, no outbound IP, Firewall deny-all |
-| Stateful nodes / pods | Microsoft Entra ID (`AzureActiveDirectory` service tag) | TCP 443 | Only exception, needed for workload identity token exchange because Entra ID has no Private Link for sign-in – see open questions |
+| Stateful nodes / pods | Microsoft Entra ID (`AzureActiveDirectory` service tag) | TCP 443 | Exception, needed for workload identity token exchange because Entra ID has no Private Link for sign-in – see open questions |
+| Stateful nodes (Azure Policy add-on) | `data.policy.core.windows.net`, `store.policy.core.windows.net`, `dc.services.visualstudio.com` | TCP 443 | Exception, Firewall application rules for these FQDNs only; the add-on has no Private Link ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
 
-Azure Monitor is reached through an Azure Monitor Private Link Scope. AKS add-ons that need public Azure endpoints
-(e.g. the Azure Policy add-on) are not enabled; policies are delivered by Flux as Gatekeeper constraints in every
-cluster ([section 14](#14-policy-enforcement-with-gatekeeper)).
+Azure Monitor is reached through an Azure Monitor Private Link Scope. Other AKS add-ons that need public Azure
+endpoints are not enabled in the stateful cluster; the Azure Policy add-on is the one accepted exception ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)).
 
 ## 9. Environments (nine clusters)
 
@@ -322,8 +327,11 @@ cluster ([section 14](#14-policy-enforcement-with-gatekeeper)).
 *same topology* as prd (at least two stateless clusters and a three-AZ stateful cluster), otherwise the upgrade
 procedures cannot be rehearsed there; they can use smaller VM sizes and lower autoscaler limits.
 
-- **Clusters are cattle, built by IaC.** Two IaC modules (stateless, stateful) with `env` and `az` as parameters
-  create the VNet, cluster, node pools, identities, Key Vaults and the Flux bootstrap. The IaC also writes a
+- **Clusters are cattle, built by IaC.** An environment module creates what all clusters of an environment share
+  and what must survive a cluster rebuild: the Key Vaults per zone (with their certificates and secrets), the
+  application managed identities, the ACR and the Azure Policy assignments. Two cluster modules (stateless,
+  stateful) with `env` and `az` as parameters create the VNet, cluster, node pools, private endpoints to the shared
+  Key Vaults, the federated credentials and the Flux bootstrap. The IaC also writes a
   `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`) that Flux uses for substitutions.
 - **Everything inside a cluster comes from Git via Flux** – no manual `kubectl apply`; human write access in acc
   and prd is read-only Kubernetes RBAC plus break-glass via PIM.
@@ -344,9 +352,9 @@ fleet/
 │   ├── acc/{sl-az1,sl-az2,sf}/
 │   └── prd/{sl-az1,sl-az2,sl-az3,sf}/
 ├── infrastructure/
-│   ├── base/                      # Gatekeeper + common constraints, Cilium policies, CSI, monitoring
-│   ├── stateless/                 # Traefik + Gateways per zone, cert-manager, stateless constraints, HPA/KEDA
-│   └── stateful/                  # storage classes (ZRS), operators, stateful constraints (no ingress)
+│   ├── base/                      # Cilium policies, Secrets Store CSI settings, monitoring
+│   ├── stateless/                 # Traefik + Gateways + certificate SecretProviderClass per zone, HPA/KEDA
+│   └── stateful/                  # storage classes (ZRS), operators (no ingress)
 └── apps/
     └── <app>/
         ├── base/
@@ -354,15 +362,20 @@ fleet/
         └── stateful/{dev,acc,prd}/
 ```
 
-- **Flux installation**: by IaC as the AKS GitOps extension (`microsoft.flux`) or upstream Flux via Helm – same
-  version on all clusters, upgraded like any other platform component (dev first).
+- **Flux installation**: upstream Flux, installed by the cluster IaC from the environment's ACR – same version on all
+  clusters, upgraded like any other platform component (dev first). The AKS GitOps extension (`microsoft.flux`) is
+  [not supported on network isolated clusters](https://learn.microsoft.com/en-us/azure/aks/concepts-network-isolated#using-features-add-ons-and-extensions-requiring-egress),
+  so it cannot be used in the stateful cluster, and one installation method everywhere keeps the clusters identical.
+- **Policies are not in the fleet repository**: they are Azure Policy definitions and assignments in the IaC
+  repository ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)); CI still tests the rendered fleet
+  manifests against the same constraint templates.
 - **Source = OCI artifact in the environment's ACR, not Git.** The stateful cluster cannot reach a Git server on the
   Internet, and using the same mechanism everywhere keeps all clusters identical. On merge to `main`, CI validates
   (`kustomize build`, kubeconform, policy tests), runs `flux push artifact oci://<acr>.azurecr.io/fleet:<git-sha>`,
   signs it with cosign and tags it. Flux's `OCIRepository` pulls it through the ACR private endpoint with workload
   identity (`provider: azure`) and verifies the signature.
-- **Order inside a cluster**: Kustomization `dependsOn` chain `infra-controllers` → `infra-configs` (policies, CRDs)
-  → `apps`, each with `wait: true` and health checks, `prune: true` to remove anything deleted from Git.
+- **Order inside a cluster**: Kustomization `dependsOn` chain `infra-controllers` → `infra-configs` (CRDs, Cilium
+  policies) → `apps`, each with `wait: true` and health checks, `prune: true` to remove anything deleted from Git.
 - **Waves inside an environment**: `sl-az1` follows tag `<env>-wave1`; `sl-az2`, `sl-az3` and `sf` follow
   `<env>-wave2`. CI moves `wave2` only after all wave 1 Kustomizations are `Ready` and the error-rate / latency checks
   pass, so a bad change never reaches every stateless cluster at once. Rollback = move the tag back.
@@ -459,66 +472,116 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
   own only `HTTPRoute`s in their namespaces. `allowedRoutes` selects namespaces with `platform/zone=<zone>`, so a route
   can never attach to another zone's gateway.
 - **Internal DNS names with Let's Encrypt certificates.** Each zone has its own DNS name space, e.g.
-  `*.ext-fi.prd.apps.example.com`, resolved only by the Private DNS zone in the hub (split horizon: the name has no
-  public A record). cert-manager obtains a **wildcard certificate per zone** from Let's Encrypt with the **DNS-01**
-  challenge, writing only the `_acme-challenge` TXT record into a public Azure DNS zone with workload identity
-  (optionally delegated via CNAME to a dedicated validation zone so cert-manager cannot change anything else). Because
-  the certificate is publicly trusted, Application Gateway / Front Door validate the backend without uploading custom
-  root certificates, and clients inside the corporate network need no private CA.
-  - The parent domain must be a **registered public domain** – suffixes like `.internal`, `.local` or `.corp` cannot
-    get Let's Encrypt certificates.
-  - Certificates appear in public Certificate Transparency logs; the per-zone wildcard keeps application names out
-    of them.
-  - Egress `acme-v02.api.letsencrypt.org` is on the Firewall allow-list of the stateless spokes only.
+  `*.ext-fi.prd.example.com`, resolved only by the Private DNS zone in the hub (split horizon: the name has no
+  public A record). Traefik serves the zone's wildcard certificate from Key Vault
+  ([below](#certificates-issued-centrally-distributed-through-key-vault)). Because the certificate is publicly
+  trusted, Application Gateway / Front Door validate the backend without uploading custom root certificates, and
+  clients inside the corporate network need no private CA.
 - **No non-TLS traffic.** Traefik has only the `websecure` entry point on 443; port 80 is not exposed at all (no
   HTTP→HTTPS redirect listener either), the internal load balancer has only port 443, and the NSG on `snet-<zone>-ilb`
-  allows only TCP 443. Gatekeeper rejects `Gateway` listeners with protocol `HTTP`, `HTTPRoute`s that do not attach to
+  allows only TCP 443. Azure Policy rejects `Gateway` listeners with protocol `HTTP`, `HTTPRoute`s that do not attach to
   the HTTPS listener, hostnames outside the zone's domain, `Ingress` objects, and `LoadBalancer` / `NodePort` Services
   outside `<zone>-ingress`. Traefik adds HSTS to every response. The traffic layer listens on HTTPS only and
   re-encrypts to Traefik (end-to-end TLS).
 
 ### Stateful cluster: the application terminates TLS
 
-- **No ingress controller and no Gateway API** – the CRDs are not installed and Gatekeeper rejects `Ingress`,
+- **No ingress controller and no Gateway API** – the CRDs are not installed and Azure Policy rejects `Ingress`,
   `Gateway` and `HTTPRoute` objects. Fewer moving parts in the cluster that is hardest to upgrade.
 - **Azure CNI (VNet-integrated)**: pod IPs are routable in the backend spoke, so NSGs, the Firewall and Cilium
   policies see real addresses.
 - Each application is published with a `LoadBalancer` Service that must be internal
   (`service.beta.kubernetes.io/azure-load-balancer-internal: "true"`), placed in its zone's
   `snet-<zone>-ilb` (`…-internal-subnet` annotation) and use `externalTrafficPolicy: Local`; `NodePort` and public
-  load balancers are rejected by Gatekeeper.
+  load balancers are rejected by Azure Policy.
 - **The application handles TLS itself** (TLS 1.2+), which is an onboarding requirement for the stateful cluster: it
   terminates TLS on its listener and reloads the certificate on rotation. Most products that end up here (databases,
   brokers, search engines) support this natively.
-- The cluster cannot reach Let's Encrypt, so certificates are issued outside it – by the platform's certificate
-  pipeline in the management network (same Let's Encrypt DNS-01 process, names like
-  `<app>.int-fi.prd.data.example.com`) or by the enterprise CA – and stored in the zone's Key Vault as `<app>-tls`.
-  The application reads it through the Secrets Store CSI driver, so the ABAC secret-name prefix of
-  [picture 6](#6-workload-identity-first-key-vault-secrets-only-when-needed) also covers certificates.
+- The application uses the **same zone certificate from Key Vault** as Traefik (see below), mounted as PEM files
+  through the Secrets Store CSI driver; it is reached under a name in the zone's domain, e.g.
+  `app-x.int-fi.prd.example.com`.
 - Clients in the stateless clusters connect with TLS and verify the name; plain-text ports are not allowed by the
   Firewall rules between frontend and backend.
 
-## 14. Policy enforcement with Gatekeeper
+### Certificates issued centrally, distributed through Key Vault
 
-**OPA Gatekeeper is the single policy engine.** It is installed by Flux from the environment's ACR (upstream Helm
-chart, same version in every cluster, ≥ 3 replicas with a PDB so the webhook survives node drains), because the stateful
-cluster cannot use the Azure Policy add-on and having one engine everywhere keeps the rules identical. The Azure Policy
-add-on is not enabled in any cluster (it would install a second Gatekeeper). Azure Policy is still used for the Azure
-resources themselves (cluster settings, allowed VM sizes, VNet encryption, private endpoints only).
+No cluster issues certificates – there is no cert-manager or other ACME client in any cluster, so no cluster needs
+Internet access to Let's Encrypt or write access to DNS.
 
-- `ConstraintTemplate`s (Rego) and constraints live in `infrastructure/base` and the cluster-type folders and are
-  tested in CI with `gator verify` before the Flux artifact is published.
-- New constraints start with `enforcementAction: dryrun` (audit only) in dev, then become `deny` dev → acc → prd.
-- Mutations (`Assign`, `AssignMetadata`) set defaults; constraints validate the result.
+- **One renewal job per environment** runs in the management network (scheduled pipeline or Container Apps job) with
+  its own managed identity. It requests the certificates from Let's Encrypt with the **DNS-01** challenge, writes only
+  the `_acme-challenge` TXT records into a public Azure DNS validation zone (the zone names are delegated to it by
+  CNAME, so the job cannot change any other record) and **imports** the result into the Key Vaults as Key Vault
+  certificates. It renews 30 days before expiry; Key Vault `CertificateNearExpiry` events alert the platform team if
+  renewal fails.
+- **One wildcard certificate per isolation zone and environment**, e.g. `*.ext-fi.prd.example.com`, stored in that
+  zone's vault as `cert-ext-fi-wildcard`. The vault is shared by the environment, so **all clusters use the same
+  certificate**: Traefik in `sl-az1`, `sl-az2`, `sl-az3` and the TLS-terminating applications in `sf`. A rebuilt
+  cluster needs no new certificate, and Let's Encrypt rate limits are never an issue (a handful of certificates per
+  environment).
+- **The `cert-` part of the vault is available to every application that needs a certificate.** Key Vault exposes a
+  certificate together with its private key as a secret of the same name, so the ABAC conditions of
+  [section 6](#6-workload-identity-first-key-vault-secrets-only-when-needed) cover certificates too: identities that need
+  a certificate (each zone's Traefik, stateful applications, any application with a client or server certificate)
+  get a second **Key Vault Secrets User** assignment with condition `StringStartsWith 'cert-'`. They can read all
+  certificates of their zone, but still not other applications' `<app>-` secrets. Requesting it is a flag in the
+  application onboarding.
+- **Delivery and rotation** with the Secrets Store CSI driver (rotation enabled, 2-minute poll):
+  - Traefik: a `SecretProviderClass` in `<zone>-ingress` syncs the certificate into a `kubernetes.io/tls` Secret, which
+    the zone's `Gateway` listener references; Traefik reloads it when the Secret changes.
+  - Applications: the certificate and key are mounted as PEM files and the application reloads them on change.
+- Things to be aware of:
+  - The parent domain must be a **registered public domain** – suffixes like `.internal`, `.local` or `.corp` cannot
+    get Let's Encrypt certificates.
+  - Certificates appear in public Certificate Transparency logs; the per-zone wildcard keeps application names out
+    of them.
+  - The wildcard private key is shared by everything in the zone that needs a certificate. Its blast radius is one
+    zone of one environment, and it is renewed every 60 days. An application that must not share a key can get its
+    own certificate (`cert-<app>-…`) from the same job.
+  - Egress `acme-v02.api.letsencrypt.org` is allowed only for the renewal job, not for any cluster.
 
-| Constraint | All clusters | Stateless | Stateful |
+## 14. Policy enforcement with the Azure Policy add-on
+
+**The AKS-native [Azure Policy add-on](https://learn.microsoft.com/en-us/azure/governance/policy/concepts/policy-for-kubernetes)
+is the single policy engine**, enabled by the cluster IaC in every cluster. It runs Gatekeeper, but AKS installs and
+upgrades it, and the policies are ordinary Azure Policy definitions and assignments – the same tool that governs the
+Azure resources (cluster settings, allowed VM sizes, VNet encryption, local auth disabled, private endpoints only).
+No Gatekeeper is installed by Flux.
+
+- **Assignments per environment subscription** (`sub-aks-dev`, `sub-aks-acc`, `sub-aks-prd`), so a new or rebuilt
+  cluster gets every policy automatically. Compliance of all clusters is visible in one place (Azure Policy, Defender
+  for Cloud).
+- **Built-in definitions first**: the Kubernetes pod security *restricted* initiative, allowed images, required
+  probes and resource requests, and [deployment safeguards](https://learn.microsoft.com/en-us/azure/aks/deployment-safeguards).
+- **Custom definitions** (`Microsoft.Kubernetes.Data` mode) for the platform's own rules, with the constraint or
+  mutation template embedded as Base64 in the definition. Templates are kept in the IaC repository and tested in CI
+  with `gator verify`; CEL-based definitions (generated as Kubernetes `ValidatingAdmissionPolicy`, evaluated
+  in-process) are preferred for new validations where they can express the rule.
+- **Rollout dev → acc → prd**: definitions are versioned; a new or changed definition is assigned with effect `audit`
+  in dev, then `deny`, then promoted to acc and prd with the rest of the platform change.
+- **Platform namespaces**: `kube-system` and `gatekeeper-system` are excluded by the add-on; `flux-system` and other
+  platform namespaces are excluded from application rules through the definitions' namespace exclusion parameters.
+  `<zone>-ingress` is excluded only from the rules that Traefik itself must break (its `LoadBalancer` Service, the
+  synced TLS Secret) – zone pinning still applies to it.
+
+Limits of the add-on and how the design handles them:
+
+| Limit | Consequence in this design |
+|---|---|
+| Needs `data.policy.core.windows.net`, `store.policy.core.windows.net`, `dc.services.visualstudio.com` (+ Entra ID); no Private Link | Firewall application rules for these FQDNs, also from the stateful cluster (exception to "no Internet", see [flows](#flows-between-frontend-and-backend)) |
+| Custom definitions cannot use Gatekeeper data replication (no lookups of other objects) | Zone rules match the namespace name prefix `<zone>-*`; "PDB exists for every Deployment / StatefulSet" is checked in CI on the rendered manifests, because Flux only applies validated artifacts |
+| Policies are synced from Azure every 15 minutes | The cluster bootstrap keeps the Flux `apps` Kustomization suspended until all assigned constraint templates and constraints are present in the cluster |
+| Gatekeeper config cannot be changed | No custom Gatekeeper settings; defaults are fine for this design |
+| Max 10 000 pods per cluster | Well above the expected size; monitored |
+
+| Policy | All clusters | Stateless | Stateful |
 |---|---|---|---|
-| Namespace has `platform/zone`; pod nodeSelector / toleration match it (mutation + validation) | ✔ | | |
+| Namespace `<zone>-*` has label `platform/zone=<zone>`; pod nodeSelector / toleration match the prefix (mutation + validation) | ✔ | | |
 | Images by digest from the environment's ACR only | ✔ | | |
 | ServiceAccount used by application pods carries the workload identity client ID; no `imagePullSecrets` | ✔ | | |
-| No `Opaque` / basic-auth / docker-config `Secret`s in application namespaces (Helm release and cert-manager TLS secrets allowed); no `secretObjects` in `SecretProviderClass` | ✔ | | |
+| No `Opaque` / basic-auth / docker-config `Secret`s in application namespaces (Helm release secrets allowed); `secretObjects` in `SecretProviderClass` only for the `kubernetes.io/tls` certificate in `<zone>-ingress` | ✔ | | |
 | Requests set, probes set, no privileged / hostNetwork / hostPath for applications | ✔ | | |
-| PDB required, replica and rollout guardrails of [section 11](#11-zero-downtime-application-upgrades) | ✔ | ≥ 2 replicas | ≥ 3 replicas, zone spread |
+| Replica and rollout guardrails (PDB existence: CI check) of [section 11](#11-zero-downtime-application-upgrades) | ✔ | ≥ 2 replicas | ≥ 3 replicas, zone spread |
 | Reject `PersistentVolumeClaim` | | ✔ | |
 | Reject `Ingress`; only HTTPS `Gateway` listeners; `HTTPRoute` only to the zone's HTTPS listener and zone domain | | ✔ | |
 | Reject `LoadBalancer` / `NodePort` Services outside `<zone>-ingress` | | ✔ | |
@@ -543,13 +606,14 @@ resources themselves (cluster settings, allowed VM sizes, VNet encryption, priva
   identity acceptable, or must stateful workloads avoid Entra-authenticated access?
 - Which workloads are expected to get a stateful-cluster exception? If none remain after the PaaS review, the
   stateful cluster could be left out of an environment entirely.
-- Certificates for the stateful applications: Let's Encrypt via the central pipeline, or the enterprise CA (no CT
-  log exposure, but clients must trust the private root)?
-- DNS naming for the internal Let's Encrypt names (`<zone>.<env>.apps.example.com`) and who owns the public
+- Is one wildcard certificate per zone and environment acceptable, or do some applications need their own
+  certificate (own key)?
+- DNS naming for the internal Let's Encrypt names (`<zone>.<env>.example.com`) and who owns the public
   validation zone.
+- "No Internet" for the stateful cluster: are the Azure Policy add-on FQDNs acceptable as a second exception next to
+  Entra ID?
 - Traffic layer: Application Gateway per environment, or Azure Front Door Premium for external zones (also enables a
   second region later)?
-- Flux as AKS GitOps extension (Microsoft-managed upgrades) or upstream Flux (newer features, own lifecycle)?
 
 ## Editing the pictures
 
