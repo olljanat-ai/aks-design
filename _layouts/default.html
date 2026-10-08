@@ -14,9 +14,39 @@
   code { padding: 0.1em 0.3em; }
   pre { padding: 12px; overflow-x: auto; }
   blockquote { margin: 0; padding: 0 1em; color: #59636e; border-left: 4px solid #d0d7de; }
+  #lightbox { display: none; position: fixed; inset: 0; z-index: 1000; background: #fff; cursor: zoom-out; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
+  #lightbox.open { display: flex; }
+  #lightbox img { width: 100%; height: 100%; object-fit: contain; }
+  main img { cursor: zoom-in; }
 </style>
 </head>
 <body>
+<main>
 {{ content }}
+</main>
+<div id="lightbox" role="dialog" aria-label="Picture in full screen"><img alt=""></div>
+<script>
+(function () {
+  var box = document.getElementById('lightbox');
+  var big = box.querySelector('img');
+  function close() {
+    box.classList.remove('open');
+    if (document.fullscreenElement) document.exitFullscreen();
+  }
+  document.querySelectorAll('main img').forEach(function (img) {
+    img.addEventListener('click', function () {
+      big.src = img.src;
+      big.alt = img.alt;
+      box.classList.add('open');
+      if (box.requestFullscreen) box.requestFullscreen().catch(function () {});
+    });
+  });
+  box.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  document.addEventListener('fullscreenchange', function () {
+    if (!document.fullscreenElement) box.classList.remove('open');
+  });
+})();
+</script>
 </body>
 </html>
