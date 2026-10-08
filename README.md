@@ -23,7 +23,8 @@ encrypted.
 | R4 | Isolation = Key Vault + network + node pool per type | Every zone has its own Key Vault, subnets (NSG + route table) and node pool |
 | R5 | Only connectivity mandatory for Kubernetes allowed between zones | Deny-by-default on three layers: NSG, Azure Firewall, Cilium network policy ([picture 5](#5-allowed-and-blocked-flows)) |
 | R6 | Applications isolated in namespaces + network policies | Namespace per application, default-deny policies ([picture 7](#7-application-multi-tenancy-inside-a-zone)) |
-| R7 | Key Vault multi-tenancy with [Azure RBAC + ABAC](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-abac) | Per-application workload identity with secret-name-prefix conditions ([picture 6](#6-key-vault-per-zone-with-abac-multi-tenancy)) |
+| R7 | Key Vault multi-tenancy with [Azure RBAC + ABAC](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-abac) | Per-application workload identity with secret-name-prefix conditions ([picture 6](#6-workload-identity-first-key-vault-secrets-only-when-needed)) |
+| R7a | Workload identities wherever possible, secrets only when needed | Per-application workload identity with Entra ID auth to all Azure services, local auth disabled by Azure Policy; Key Vault secrets only for targets without Entra ID ([section 6](#6-workload-identity-first-key-vault-secrets-only-when-needed)) |
 | R8 | Two cluster types: stateless and stateful | Stateless clusters in the frontend network, one stateful cluster in the backend network ([picture 8](#8-cluster-types-stateless-and-stateful)) |
 | R8a | Stateful cluster is the last option | Placement order stateless cluster → Azure PaaS → stateful cluster; the stateful cluster needs a documented exception ([where does a workload run](#where-does-a-workload-run)) |
 | R9 | Stateful cluster exists once, in the backend network with the Azure PaaS services, no Internet connectivity at all | Backend spoke with PaaS private endpoints; network isolated AKS (outbound type `none`), no public IPs, Firewall deny-all for backend prefixes |
@@ -128,34 +129,76 @@ Only the flows Kubernetes needs to function are allowed between a workload zone 
 | ② | `snet-apiserver` | Zone nodes | TCP 10250 | logs, exec, port-forward |
 | ③ | Zone pods | CoreDNS (system pods) | UDP/TCP 53 | name resolution |
 | ④ | metrics-server (system pods) | Zone nodes | TCP 10250 | resource metrics |
-| ⑤ | Zone pods | Own zone Key Vault PE | TCP 443 | secrets |
-| ⑥ | Zone nodes + pods | Azure Firewall | per FQDN | AKS required FQDNs, MCR, Entra ID, Azure Monitor |
+| ⑤ | Zone pods | Own zone Key Vault PE | TCP 443 | secrets (only applications that need one) |
+| ⑥ | Zone nodes + pods | Azure Firewall | per FQDN | AKS required FQDNs, MCR, Entra ID (workload identity token exchange), Azure Monitor |
 | ⑦ | Zone nodes | All nodes | TCP 4240, ICMP | Cilium health (optional) |
 | – | AzureLoadBalancer | `snet-apiserver` | TCP 9988 | API server health probe |
 
 **Everything else between zones is blocked** – pod-to-pod, pod-to-other-zone Key Vault and direct Internet –
 enforced three times: NSG (L3/L4), Azure Firewall (L3–L7, logged), Cilium cluster-wide policy (pod identity).
 
-## 6. Key Vault per zone with ABAC multi-tenancy
+## 6. Workload identity first, Key Vault secrets only when needed
 
-![Key Vault ABAC](images/06-key-vault-abac.svg)
+![Workload identity and Key Vault](images/06-key-vault-abac.svg)
+
+**Rule: an application authenticates with its workload identity wherever the target supports Microsoft Entra ID;
+a secret is used only when there is no other way.** No passwords, connection strings with keys, SAS tokens or
+storage account keys for Azure services.
+
+### Workload identity per application
+
+- Each application has, per isolation zone and environment, its own user-assigned managed identity
+  (`id-<zone>-<app>`), created by IaC together with the namespace. Its Kubernetes ServiceAccount carries the
+  `azure.workload.identity/client-id` annotation; pods get a short-lived projected token that is exchanged for an
+  Entra ID token – nothing long-lived is stored anywhere.
+- **Federated credentials per cluster**: every cluster has its own OIDC issuer, so the identity has one federated
+  credential per cluster of the environment (`sl-az1`, `sl-az2`, (`sl-az3`), `sf`) for subject
+  `system:serviceaccount:<namespace>:<app>`. A rebuilt stateless cluster gets a new issuer; the IaC that creates the
+  cluster also updates the federated credentials (a managed identity allows at most 20).
+- The identity gets **data-plane roles directly on the Azure resources of its zone**, never on other zones:
+
+| Target | How the application authenticates | Local auth disabled with |
+|---|---|---|
+| Azure SQL Database | Entra token (`Active Directory Default` in the driver), contained database user for the identity | Entra-only authentication |
+| Azure Database for PostgreSQL | Entra token as password, role mapped to the identity | Entra-only authentication |
+| Storage (Blob, Queue, Table, Files REST) | `Storage Blob Data …` roles | `allowSharedKeyAccess: false` |
+| Service Bus, Event Hubs | `… Data Sender / Receiver` roles | `disableLocalAuth: true` |
+| Cosmos DB | Cosmos DB data-plane RBAC | `disableLocalAuth: true` |
+| Azure Cache for Redis | Entra authentication, access policy for the identity | access keys disabled |
+| Key Vault (only for the secrets below) | `Key Vault Secrets User` with ABAC condition | RBAC permission model |
+| Other Azure APIs (App Configuration, Azure OpenAI, …) | Azure RBAC roles | `disableLocalAuth` where available |
+
+  "Local auth disabled" is enforced with Azure Policy on the resources, so a key-based fallback cannot be switched
+  on later. Application configuration contains only endpoints and client IDs, which are not secrets.
+- **Platform components use workload identity too**: Flux (`OCIRepository` `provider: azure`), cert-manager (DNS-01),
+  the Secrets Store CSI driver (per application identity), the Azure Monitor agent, external-dns. Images are pulled
+  with the kubelet identity, which has only `AcrPull` on the environment's ACR – no `imagePullSecrets`.
+
+### Secrets only when needed
+
+A secret is allowed only when the target cannot use Entra ID: third-party APIs and SaaS keys, partner systems, legacy
+protocols, and the TLS certificates of the stateful applications ([section 13](#13-encryption-in-transit-and-tls)).
+Such a secret always lives in the zone's **Key Vault** – never in Git, Helm values or a Kubernetes `Secret` created by
+hand.
 
 Each zone has its **own Key Vault** (RBAC permission model, public access disabled, private endpoint only in the
 zone's `snet-*-pe`). Inside a zone's vault, applications share the vault but are separated with
 [Azure ABAC conditions](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-abac):
 
-- Each application namespace has a Kubernetes ServiceAccount federated (workload identity) to its own
-  user-assigned managed identity.
-- That identity gets **Key Vault Secrets User** on the zone vault with condition
+- The application's workload identity gets **Key Vault Secrets User** on the zone vault with condition
   `@Resource[Microsoft.KeyVault/vaults/secrets:name] StringStartsWith '<app>-'`.
 - Application pipelines get **Key Vault Secrets Officer** with the same prefix on
-  `@Request[...secrets:name]` for `setSecret`.
-- Secrets are mounted with the Secrets Store CSI driver.
+  `@Request[...secrets:name]` for `setSecret`; rotation is owned by the application team (expiry dates set, Event
+  Grid `SecretNearExpiry` alerts).
+- Secrets are mounted as **files** with the Secrets Store CSI driver; syncing them into Kubernetes `Secret` objects
+  (`secretObjects`) is rejected by Gatekeeper, as are hand-made `Opaque` Secrets in application namespaces
+  ([section 14](#14-policy-enforcement-with-gatekeeper)).
 
 Constraints to keep in mind: Key Vault ABAC is **preview**, supports **secrets only** (not keys/certificates
 operations) and only **vault name + secret name** attributes, and lowercase values. Therefore the secret naming
 convention `<app>-<secret>` is mandatory and must be enforced by the platform. A name condition on
-`readMetadata` breaks list calls – gate `getSecret` instead.
+`readMetadata` breaks list calls – gate `getSecret` instead. Because most applications need no secrets at all, the
+vault stays small and the preview dependency affects only the few exceptions.
 
 ## 7. Application multi-tenancy inside a zone
 
@@ -451,7 +494,7 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
   pipeline in the management network (same Let's Encrypt DNS-01 process, names like
   `<app>.int-fi.prd.data.example.com`) or by the enterprise CA – and stored in the zone's Key Vault as `<app>-tls`.
   The application reads it through the Secrets Store CSI driver, so the ABAC secret-name prefix of
-  [picture 6](#6-key-vault-per-zone-with-abac-multi-tenancy) also covers certificates.
+  [picture 6](#6-workload-identity-first-key-vault-secrets-only-when-needed) also covers certificates.
 - Clients in the stateless clusters connect with TLS and verify the name; plain-text ports are not allowed by the
   Firewall rules between frontend and backend.
 
@@ -472,6 +515,8 @@ resources themselves (cluster settings, allowed VM sizes, VNet encryption, priva
 |---|---|---|---|
 | Namespace has `platform/zone`; pod nodeSelector / toleration match it (mutation + validation) | ✔ | | |
 | Images by digest from the environment's ACR only | ✔ | | |
+| ServiceAccount used by application pods carries the workload identity client ID; no `imagePullSecrets` | ✔ | | |
+| No `Opaque` / basic-auth / docker-config `Secret`s in application namespaces (Helm release and cert-manager TLS secrets allowed); no `secretObjects` in `SecretProviderClass` | ✔ | | |
 | Requests set, probes set, no privileged / hostNetwork / hostPath for applications | ✔ | | |
 | PDB required, replica and rollout guardrails of [section 11](#11-zero-downtime-application-upgrades) | ✔ | ≥ 2 replicas | ≥ 3 replicas, zone spread |
 | Reject `PersistentVolumeClaim` | | ✔ | |
@@ -488,7 +533,10 @@ resources themselves (cluster settings, allowed VM sizes, VNet encryption, priva
   blast radius / hard network boundary.
 - Is CoreDNS on the shared system pool acceptable, or should each zone run its own DNS (e.g. NodeLocal DNS)?
 - Should external zones share one Application Gateway for Containers or keep one WAF per zone (current draft)?
-- Key Vault ABAC is preview – acceptable for production, or fall back to vault per application until GA?
+- Key Vault ABAC is preview – acceptable for production, or fall back to vault per application until GA? (Affects only
+  applications with a secret exception.)
+- Which application stacks lack Entra ID support in their drivers/SDKs, and are they upgraded or given a secret
+  exception?
 - Two or three stateless clusters per environment? Two is the minimum, but then each must carry 100 % of the load and
   an AZ outage *during* an upgrade leaves no redundancy; three needs only 50 % headroom per cluster.
 - "No Internet" for the stateful cluster: is the Entra ID (`AzureActiveDirectory` service tag) exception for workload
