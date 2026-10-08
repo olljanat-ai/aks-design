@@ -17,7 +17,7 @@ flowchart TB
         pe_api["Private Endpoint<br/>→ API server"]
     end
 
-    subgraph SPOKE["AKS spoke VNet (one AKS cluster)"]
+    subgraph SPOKE["AKS spoke VNet of one cluster (same inner layout in every stateless and stateful cluster, see picture 8)"]
         direction LR
         subgraph CP["Control plane zone"]
             direction TB
