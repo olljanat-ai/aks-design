@@ -1,0 +1,39 @@
+%% Control plane access: private API server in a dedicated delegated subnet, reachable only via Private Link from management network
+flowchart LR
+    subgraph MGMT["Management VNet"]
+        admins["Platform admins<br/>(Entra ID + PIM)"]
+        ci["CI/CD agents"]
+        pe["Private Endpoint"]
+    end
+
+    subgraph HUB["Hub VNet"]
+        dns["Private DNS zone<br/>privatelink.&lt;region&gt;.azmk8s.io"]
+    end
+
+    subgraph SPOKE["AKS spoke VNet"]
+        subgraph CP["Control plane zone"]
+            pls["Private Link Service"]
+            ilb["API server ILB VIP<br/>snet-apiserver /28"]
+            sys["System node pool<br/>(CriticalAddonsOnly taint)"]
+        end
+        subgraph WL["Workload zones (int-fi, int-se, ext-fi, ext-se)"]
+            nodes["Zone node pools<br/>kubelet"]
+        end
+    end
+
+    admins -->|"kubectl over Bastion / jump host"| pe
+    ci --> pe
+    pe -.->|"resolves via"| dns
+    pe -->|"TCP 443"| pls --> ilb
+    nodes -->|"TCP 443, 4443<br/>(direct to ILB IP, no DNS)"| ilb
+    ilb -->|"TCP 10250 kubelet<br/>+ webhook / aggregated API pods"| sys
+    ilb -->|"TCP 10250 kubelet<br/>(logs, exec, port-forward)"| nodes
+
+    pub["Public API endpoint"]:::off
+    pub -.-x|"disabled<br/>(private cluster)"| ilb
+
+    classDef off fill:#ffebee,stroke:#c62828,color:#000,stroke-dasharray: 5 5
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
+    class pls,ilb,sys cp
+    class admins,ci,pe,dns hub

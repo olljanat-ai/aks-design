@@ -1,0 +1,35 @@
+%% Application multi-tenancy inside one zone: namespace per application, default-deny network policies
+flowchart LR
+    client(("Clients<br/>(Internet for ext-*,<br/>corporate for int-*)"))
+
+    subgraph ZONE["Zone ext-fi (node pool extfi)"]
+        direction LR
+        appgw["App Gateway WAF v2<br/>snet-ext-fi-appgw"]
+        subgraph ING["ns: ext-fi-ingress"]
+            ic["Ingress / Gateway API<br/>controller (zone-scoped)"]
+        end
+        subgraph A["ns: ext-fi-app-a"]
+            a1["frontend"] --> a2["backend"]
+        end
+        subgraph B["ns: ext-fi-app-b"]
+            b1["api"]
+        end
+    end
+
+    subgraph SYS["kube-system"]
+        dns["CoreDNS"]
+    end
+
+    client -->|"HTTPS"| appgw --> ic
+    ic -->|"allowed by policy"| a1
+    ic -->|"allowed by policy"| b1
+    a1 & a2 & b1 -->|"DNS allowed"| dns
+    a2 -.-x|"default deny"| b1
+    b1 -.-x|"default deny"| a1
+
+    linkStyle 8,9 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
+
+    classDef ext fill:#fff3e0,stroke:#ef6c00,color:#000
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    class appgw,ic,a1,a2,b1 ext
+    class dns cp

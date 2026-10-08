@@ -1,0 +1,48 @@
+%% Mandatory flows (numbered) for one workload zone; everything else between zones is blocked.
+%% The same pattern repeats for every zone; only the zone's own Key Vault and ingress differ.
+flowchart LR
+    subgraph CP["Control plane zone"]
+        direction TB
+        api["API server<br/>snet-apiserver"]
+        dns["CoreDNS<br/>(system pods)"]
+        ms["metrics-server,<br/>webhooks (system pods)"]
+    end
+
+    subgraph Z["Zone int-fi"]
+        direction TB
+        n["Nodes<br/>snet-int-fi-nodes"]
+        p["Pods<br/>snet-int-fi-pods"]
+        kv["Key Vault kv-int-fi<br/>(private endpoint)"]
+    end
+
+    subgraph H["Hub"]
+        direction TB
+        fw["Azure Firewall"]
+        azure["AKS required FQDNs, MCR,<br/>Entra ID, Azure Monitor"]
+    end
+
+    subgraph O["Other zones: int-se, ext-fi, ext-se"]
+        direction TB
+        on["Nodes / Pods"]
+        okv["Key Vaults"]
+    end
+
+    n -->|"① TCP 443, 4443"| api
+    api -->|"② TCP 10250 kubelet"| n
+    p -->|"③ UDP/TCP 53"| dns
+    ms -->|"④ TCP 10250 metrics"| n
+    p -->|"⑤ TCP 443"| kv
+    Z -->|"⑥ all egress via UDR"| fw
+    fw -->|"FQDN allow-list"| azure
+    Z x-.-x|"⛔ BLOCKED<br/>NSG + Firewall + Cilium policy<br/>(only ⑦ Cilium health TCP 4240 node↔node, optional)"| O
+
+    linkStyle 7 stroke:#c62828,stroke-width:3px,stroke-dasharray:6 4
+
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef other fill:#f5f5f5,stroke:#9e9e9e,color:#000
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
+    class api,dns,ms cp
+    class n,p,kv int
+    class on,okv other
+    class fw,azure hub

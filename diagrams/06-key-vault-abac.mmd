@@ -1,0 +1,46 @@
+%% Key Vault per zone + per-application access with Azure RBAC + ABAC conditions (secret-name prefix)
+flowchart LR
+    subgraph ZONE["Zone int-fi (namespaces on node pool intfi)"]
+        direction TB
+        subgraph NSA["ns: int-fi-app-a"]
+            saA["ServiceAccount app-a<br/>(workload identity)"]
+            csiA["Secrets Store CSI<br/>SecretProviderClass"]
+        end
+        subgraph NSB["ns: int-fi-app-b"]
+            saB["ServiceAccount app-b<br/>(workload identity)"]
+            csiB["Secrets Store CSI<br/>SecretProviderClass"]
+        end
+    end
+
+    subgraph ENTRA["Microsoft Entra ID"]
+        miA["Managed identity<br/>id-int-fi-app-a<br/>federated: system:serviceaccount:int-fi-app-a:app-a"]
+        miB["Managed identity<br/>id-int-fi-app-b<br/>federated: system:serviceaccount:int-fi-app-b:app-b"]
+    end
+
+    subgraph KV["Key Vault kv-int-fi (RBAC mode, private endpoint only)"]
+        direction TB
+        sA1["app-a-db-password"]
+        sA2["app-a-api-key"]
+        sB1["app-b-db-password"]
+    end
+
+    raA["Role assignment<br/>Key Vault Secrets User @ kv-int-fi<br/>condition: secret name StringStartsWith 'app-a-'"]
+    raB["Role assignment<br/>Key Vault Secrets User @ kv-int-fi<br/>condition: secret name StringStartsWith 'app-b-'"]
+
+    csiA --> saA -->|"OIDC token exchange"| miA --> raA
+    csiB --> saB -->|"OIDC token exchange"| miB --> raB
+    raA -->|"allow"| sA1 & sA2
+    raB -->|"allow"| sB1
+    raA -.-x|"ForbiddenByRbac"| sB1
+
+    other["Other zones' identities<br/>(no role assignment on kv-int-fi)"] -.-x|"denied"| KV
+    linkStyle 9,10 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
+
+    classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef id fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    classDef off fill:#ffebee,stroke:#c62828,color:#000
+    class saA,saB,csiA,csiB,sA1,sA2,sB1 int
+    class miA,miB id
+    class raA,raB note
+    class other off

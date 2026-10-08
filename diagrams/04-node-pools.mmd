@@ -1,0 +1,40 @@
+%% Node pool per zone: scheduling isolation with labels, taints and admission control
+flowchart TB
+    adm["Admission control (Azure Policy / Gatekeeper or Kyverno)<br/>1. namespace must carry label platform/zone=&lt;zone&gt;<br/>2. mutate: pod gets nodeSelector + toleration of its namespace's zone<br/>3. validate: deny pods selecting or tolerating any other zone"]
+
+    subgraph NS["Namespaces"]
+        direction LR
+        ns_ifi["ns: int-fi-*<br/>platform/zone=int-fi"]
+        ns_ise["ns: int-se-*<br/>platform/zone=int-se"]
+        ns_efi["ns: ext-fi-*<br/>platform/zone=ext-fi"]
+        ns_ese["ns: ext-se-*<br/>platform/zone=ext-se"]
+        ns_sys["kube-system,<br/>platform-* namespaces"]
+    end
+
+    subgraph POOLS["Node pools (one AKS cluster)"]
+        direction LR
+        p_sys["system<br/>subnet: snet-system-*<br/>taint: CriticalAddonsOnly"]
+        p_ifi["intfi<br/>subnet: snet-int-fi-*<br/>taint: platform/zone=int-fi:NoSchedule"]
+        p_ise["intse<br/>subnet: snet-int-se-*<br/>taint: platform/zone=int-se:NoSchedule"]
+        p_efi["extfi<br/>subnet: snet-ext-fi-*<br/>taint: platform/zone=ext-fi:NoSchedule"]
+        p_ese["extse<br/>subnet: snet-ext-se-*<br/>taint: platform/zone=ext-se:NoSchedule"]
+    end
+
+    adm -.->|"enforced on every<br/>pod create/update"| NS
+    ns_sys --> p_sys
+    ns_ifi --> p_ifi
+    ns_ise --> p_ise
+    ns_efi --> p_efi
+    ns_ese --> p_ese
+
+    ds["Platform DaemonSets<br/>(Cilium, CSI, monitoring agent)<br/>tolerate all zones"]
+    ds -.->|"runs on every pool"| POOLS
+
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef ext fill:#fff3e0,stroke:#ef6c00,color:#000
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    class p_sys,ns_sys,ds cp
+    class p_ifi,p_ise,ns_ifi,ns_ise int
+    class p_efi,p_ese,ns_efi,ns_ese ext
+    class adm note
