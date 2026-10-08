@@ -7,7 +7,7 @@ flowchart LR
         direction LR
         appgw["App Gateway WAF v2<br/>HTTPS listener only"]
         subgraph ING["ns: ext-fi-ingress (platform)"]
-            ic["Traefik · Gateway ext-fi<br/>listener HTTPS :443 only<br/>*.ext-fi.&lt;env&gt;.apps.example.com<br/>(Let's Encrypt)"]
+            ic["Traefik · Gateway ext-fi<br/>listener HTTPS :443 only<br/>*.ext-fi.&lt;env&gt;.example.com<br/>(Let's Encrypt, from Key Vault)"]
         end
         subgraph A["ns: ext-fi-app-a"]
             ra["HTTPRoute app-a"]

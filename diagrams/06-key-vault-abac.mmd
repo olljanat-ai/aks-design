@@ -24,15 +24,19 @@ flowchart LR
         st["Storage<br/>shared key disabled"]
     end
 
-    subgraph KV["Key Vault kv-int-fi (RBAC mode, private endpoint only)"]
+    subgraph KV["Key Vault kv-&lt;env&gt;-int-fi (RBAC mode, private endpoint only, shared by all clusters of the environment)"]
         direction TB
         sB1["app-b-partner-api-key"]
         sX["app-c-…"]
+        cert["cert-int-fi-wildcard<br/>(certificate, shared part)"]
     end
+
+    tr["Traefik int-fi / stateful apps<br/>identities that need a certificate"]
+    raC["Key Vault Secrets User @ kv-&lt;env&gt;-int-fi<br/>condition: secret name StringStartsWith 'cert-'"]
 
     ext["Third-party API<br/>(no Entra ID support)"]
 
-    raB["Key Vault Secrets User @ kv-int-fi<br/>condition: secret name StringStartsWith 'app-b-'"]
+    raB["Key Vault Secrets User @ kv-&lt;env&gt;-int-fi<br/>condition: secret name StringStartsWith 'app-b-'"]
 
     saA -->|"projected token → Entra token"| miA
     miA -->|"contained db user"| sql
@@ -45,6 +49,7 @@ flowchart LR
     csiB -.->|"app-b calls with the key"| ext
 
     other["Other zones' identities<br/>(no role assignment in zone int-fi)"] -.-x|"denied"| PAAS
+    tr --> raC -->|"allow"| cert
     linkStyle 9,11 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
 
     classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
@@ -54,6 +59,8 @@ flowchart LR
     classDef off fill:#ffebee,stroke:#c62828,color:#000
     class saA,saB,csiB,sB1,sX int
     class miA,miB id
-    class raB note
+    class raB,raC note
+    class cert int
+    class tr id
     class sql,sb,st,ext paas
     class other off
