@@ -18,11 +18,62 @@
   #lightbox.open { display: flex; }
   #lightbox img { width: 100%; height: 100%; object-fit: contain; }
   main img { cursor: zoom-in; }
+  #toc { margin: 1em 0 2em; padding: 8px 16px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
+  #toc h2 { margin: 0.5em 0; font-size: 1.25em; border: 0; }
+  #toc ul { margin: 0; padding-left: 0; list-style: none; }
+  #toc ul ul { padding-left: 1.5em; list-style: disc; }
+  @media print {
+    body { max-width: none; padding: 0; }
+    #lightbox { display: none !important; }
+    main img { cursor: auto; }
+    table { display: table; overflow: visible; }
+    pre { white-space: pre-wrap; overflow: visible; }
+    img, tr, pre, blockquote { break-inside: avoid; }
+    h1, h2, h3, h4 { break-after: avoid; }
+    #toc { break-after: page; }
+  }
 </style>
 </head>
 <body>
 <main>
-{{ content }}
+{%- comment -%}
+  Table of contents, built at Jekyll build time from the h2/h3 headings so it is plain HTML
+  (works without JavaScript, in saved copies and in print). Inserted before the first h2.
+{%- endcomment -%}
+{%- assign intro = content | split: '<h2' | first -%}
+{%- capture toc -%}
+<nav id="toc" aria-label="Table of contents">
+<h2>Contents</h2>
+<ul>
+{%- assign open_h3 = false -%}
+{%- assign open_h2 = false -%}
+{%- assign parts = content | split: '<h' -%}
+{%- for part in parts offset: 1 -%}
+  {%- assign level = part | slice: 0 -%}
+  {%- if level != '2' and level != '3' -%}{%- continue -%}{%- endif -%}
+  {%- assign tag = part | split: '>' | first -%}
+  {%- unless tag contains 'id="' -%}{%- continue -%}{%- endunless -%}
+  {%- assign id = tag | split: 'id="' | last | split: '"' | first -%}
+  {%- assign closing = '</h' | append: level -%}
+  {%- assign inner = part | split: closing | first | remove_first: tag | remove_first: '>' -%}
+  {%- assign title = inner | strip_html | strip -%}
+  {%- if level == '2' -%}
+    {%- if open_h3 -%}</ul>{%- assign open_h3 = false -%}{%- endif -%}
+    {%- if open_h2 -%}</li>{%- endif -%}{%- assign open_h2 = true -%}
+<li><a href="#{{ id }}">{{ title }}</a>
+  {%- else -%}
+    {%- unless open_h3 -%}<ul>{%- assign open_h3 = true -%}{%- endunless -%}
+<li><a href="#{{ id }}">{{ title }}</a></li>
+  {%- endif -%}
+{%- endfor -%}
+{%- if open_h3 -%}</ul>{%- endif -%}
+{%- if open_h2 -%}</li>{%- endif -%}
+</ul>
+</nav>
+{%- endcapture -%}
+{{ intro }}
+{{ toc }}
+{{ content | remove_first: intro }}
 </main>
 <div id="lightbox" role="dialog" aria-label="Picture in full screen"><img alt=""></div>
 <script>
