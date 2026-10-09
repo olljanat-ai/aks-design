@@ -3,12 +3,13 @@
 Design drafts for a large Azure Kubernetes Service (AKS) platform with strong isolation between
 **internal / external** workloads and between **countries**, plus application multi-tenancy inside each isolation zone.
 
-The platform runs **two types of clusters** – zonal **stateless** clusters in the frontend network and one
-zone-redundant **stateful** cluster in the Internet-less backend network – in **dev, acc and prd**, i.e. at least
-nine clusters kept in sync from one Git repository – the stateless clusters with **FluxCD**, the stateful cluster
+The platform runs **two types of clusters** – zonal **stateless** clusters in the frontend network and an
+**optional** zone-redundant **stateful** cluster in the Internet-less backend network – in **dev, acc and prd**, i.e. six
+clusters (nine with the stateful cluster) kept in sync from one Git repository – the stateless clusters with **FluxCD**, the stateful cluster
 with **CI/CD pipelines** – with fully automated zero-downtime upgrades of applications and clusters.
 Data belongs in **Azure PaaS services**; the stateful cluster is the *last option*, used only when no suitable PaaS
-service exists or a special use case requires it. All admission policies are implemented with the AKS-native **Azure Policy add-on** (Gatekeeper managed by AKS).
+service exists or a special use case requires it, and it is **not built at all until the first such workload is
+approved**. All admission policies are implemented with the AKS-native **Azure Policy add-on** (Gatekeeper managed by AKS).
 Pictures 1–7 describe what is *inside* one cluster; pictures 8–13 describe the fleet of clusters and how traffic is
 encrypted.
 
@@ -26,15 +27,15 @@ encrypted.
 | R6 | Applications isolated in namespaces + network policies | Namespace per application, default-deny policies ([picture 7](#7-application-multi-tenancy-inside-a-zone)) |
 | R7 | Key Vault multi-tenancy with [Azure RBAC + ABAC](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-abac) | Per-application workload identity with secret-name-prefix conditions ([picture 6](#6-workload-identity-first-key-vault-secrets-only-when-needed)) |
 | R7a | Workload identities wherever possible, secrets only when needed | Per-application workload identity with Entra ID auth to all Azure services, local auth disabled by Azure Policy; Key Vault secrets only for targets without Entra ID ([section 6](#6-workload-identity-first-key-vault-secrets-only-when-needed)) |
-| R8 | Two cluster types: stateless and stateful | Stateless clusters in the frontend network, one stateful cluster in the backend network ([picture 8](#8-cluster-types-stateless-and-stateful)) |
+| R8 | Two cluster types: stateless and stateful | Stateless clusters in the frontend network, one optional stateful cluster in the backend network, built only when a workload requires it ([picture 8](#8-cluster-types-stateless-and-stateful)) |
 | R8a | Stateful cluster is the last option | Placement order stateless cluster → Azure PaaS → stateful cluster; the stateful cluster needs a documented exception ([where does a workload run](#where-does-a-workload-run)) |
-| R9 | Stateful cluster exists once, in the backend network with the Azure PaaS services, no Internet connectivity at all | Backend spoke with PaaS private endpoints; network isolated AKS (outbound type `none`), no public IPs, Firewall deny-all for backend prefixes |
+| R9 | Stateful cluster exists at most once, in the backend network with the Azure PaaS services, no Internet connectivity at all | Backend spoke with PaaS private endpoints; network isolated AKS (outbound type `none`), no public IPs, Firewall deny-all for backend prefixes |
 | R9a | Stateful cluster: VNet-integrated CNI, no ingress controller / Gateway API, applications handle TLS | Azure CNI (VNet, dynamic pod IP allocation) powered by Cilium; applications are published with internal `LoadBalancer` Services and terminate TLS themselves ([section 13](#13-encryption-in-transit-and-tls)) |
 | R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names, distributed through Key Vault, and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
 | R10 | Stateful cluster spread over availability zones and running AKS LTS | Node pools per AZ 1/2/3, ZRS storage, Premium tier with Long Term Support |
 | R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, cluster autoscaler |
 | R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, wave-based Flux rollout, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
-| R13 | dev, acc and prd environments kept in sync | 3 × 3 = 9 clusters from the same IaC modules, all in-cluster state from one Git repository: FluxCD in the stateless clusters, CI/CD pipeline in the stateful cluster ([picture 9](#9-environments-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
+| R13 | dev, acc and prd environments kept in sync | 3 × 2 = 6 clusters (3 × 3 = 9 with the stateful cluster) from the same IaC modules, all in-cluster state from one Git repository: FluxCD in the stateless clusters, CI/CD pipeline in the stateful cluster ([picture 9](#9-environments-six-to-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
 | R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
 | R15 | Certificates distributed through Key Vault, shared by all clusters | One shared **platform Key Vault per environment** (`kv-<env>-platform`) holds all certificates of that environment; a renewal job per environment issues one certificate per zone into it, and all clusters of the environment read it with plain Azure RBAC scoped to the individual certificate ([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
 | R16 | Countries can be added online | One address space per zone in every cluster VNet, taken from a per-country prefix; a new country adds address spaces, subnets and node pools; existing zones only get new routes and Firewall rules ([VNets and address plan](#vnets-and-address-plan)) |
@@ -73,8 +74,8 @@ jump hosts and CI/CD agents and is the only place the Kubernetes API can be reac
 Each **AKS spoke** contains one cluster split into a control plane zone and four workload isolation zones.
 Every cluster of the fleet – stateless or stateful – has this same inner layout; how the clusters are placed in
 the frontend and backend networks is shown in [picture 8](#8-cluster-types-stateless-and-stateful).
-External zones receive Internet traffic through their own Application Gateway WAF; internal zones are reached
-only from the corporate network through the firewall. In both cases the traffic ends at the zone's Traefik gateway
+External zones receive Internet traffic through Azure Front Door Premium (WAF, Private Link to the clusters);
+internal zones are reached only from the corporate network through the firewall and an internal Application Gateway. In both cases the traffic ends at the zone's Traefik gateway
 in a stateless cluster – the stateful cluster is never reached from outside the platform.
 
 ## 2. Network layout
@@ -273,7 +274,8 @@ first option that fits:
      a protocol the PaaS service does not offer).
 
 A workload in the stateful cluster needs a documented exception (why 1 and 2 do not fit, owner, exit plan) approved by
-the platform team; the exception is the label `platform/stateful-exception=<ticket>` on its namespace, required by a
+the platform team, and the stateful cluster itself is only built when the first exception is approved
+([optional](#9-environments-six-to-nine-clusters)); the exception is the label `platform/stateful-exception=<ticket>` on its namespace, required by a
 policy. The exceptions are reviewed when new PaaS services become available. The fewer workloads the
 stateful cluster runs, the smaller its blast radius and upgrade risk.
 
@@ -282,7 +284,7 @@ stateful cluster runs, the smaller its blast radius and upgrade risk.
 | | Stateless (`aks-<env>-sl-az<N>`) | Stateful (`aks-<env>-sf`) |
 |---|---|---|
 | Runs | Frontends, APIs, workers – anything that can be killed and recreated; state in Azure PaaS | Only approved exceptions: workloads that own data on disks (StatefulSets, operators) for which no PaaS service fits |
-| Count per environment | One per availability zone: `sl-az1`, `sl-az2` mandatory, `sl-az3` optional (recommended for prd) | Exactly one |
+| Count per environment | One per availability zone: `sl-az1`, `sl-az2` mandatory, `sl-az3` optional (recommended for prd) | Zero or one – built only when the first approved workload needs it |
 | Availability zones | All node pools of a cluster pinned to its AZ (`--zones <N>`); the cluster is the unit of failure | Every isolation zone has one node pool per AZ (`intfiz1`, `intfiz2`, `intfiz3`, …); system pool spread over AZ 1–3 |
 | Network | Frontend spoke `vnet-<env>-sl-az<N>`, peered to the hub | Backend spoke `vnet-<env>-sf`, peered to the hub, together with the PaaS private endpoints |
 | Internet | Egress only via Azure Firewall FQDN allow-list (outbound type `userDefinedRouting`); ingress only via the traffic layer | **None.** [Network isolated cluster](https://learn.microsoft.com/en-us/azure/aks/concepts-network-isolated) (outbound type `none`, bootstrap artifacts from the private ACR cache), no public IPs, UDR `0.0.0.0/0` → Firewall which denies all Internet for backend prefixes |
@@ -302,11 +304,65 @@ in the stateful cluster is what needs the country separation most. The stateful 
 zone's applications are reachable only on their own internal load balancer IPs, and only from the same zone of the
 stateless clusters.
 
-**Traffic layer.** External zones are published through a zone-redundant Application Gateway WAF v2 (or Azure Front
-Door Premium with Private Link origins); internal zones through an internal Application Gateway behind the hub Firewall.
-The backend pool of every listener contains the Traefik internal load balancer of the zone in *every* stateless
-cluster, always over HTTPS (port 443 only). A failed health probe removes a cluster automatically; the upgrade pipeline
-removes it deliberately by setting its weight to 0.
+### Ingress traffic: from outside and from inside
+
+All requests to applications enter through a **traffic layer** that lives outside the clusters, so it survives every
+cluster upgrade or rebuild. It has one entry point per isolation zone, and every entry point has the zone's Traefik
+gateway of **every** stateless cluster as its backends, always over HTTPS (port 443 only). Clients never connect to a
+cluster directly. The stateful cluster is never a backend of the traffic layer.
+
+| Source | Entry point | Path to the clusters |
+|---|---|---|
+| Internet (external zones `ext-*`) | **Azure Front Door Premium** with a WAF policy per zone; public DNS name of the application → Front Door endpoint | Private Link origins: a Private Link Service on the Traefik internal load balancer of the zone in each stateless cluster. No public IP in any spoke |
+| Corporate network (internal zones `int-*`) | **Internal Application Gateway WAF v2** per zone, private frontend IP only, in the edge VNet `vnet-<env>-edge`; the name `*.int-fi.prd.example.com` resolves to it in the hub Private DNS | On-premises → ExpressRoute/VPN → hub Firewall → Application Gateway → hub Firewall → Traefik internal load balancer of the zone in each stateless cluster |
+| Other Azure workloads (other spokes) | Same internal Application Gateway as the corporate network | Same as above; a Firewall rule per source |
+| Applications in the same zone and cluster | Kubernetes Service (`<app>.<zone>-<app>.svc`) | Stays inside the cluster and its availability zone; never goes through the traffic layer or to the other cluster |
+| Applications in another zone | Not allowed (R5). If a business flow needs it, the caller is treated like any other client: it goes through the target zone's entry point and needs an explicit Firewall rule | – |
+
+**Recommendation: active-active, balanced per request, no stickiness.** All stateless clusters carry traffic all the
+time with equal weights. This works because the clusters are stateless:
+
+- **The client's TLS session ends at the traffic layer**, not in a cluster. Front Door and Application Gateway
+  terminate the client's TLS (and run the WAF), then open their own TLS connections to the Traefik gateways and choose
+  the backend **per HTTP request**. Keeping "the same cluster for as long as the client's TLS session lives" would
+  therefore need cookie-based session affinity; it does not follow from TLS itself.
+- **No session affinity**, because there is no session state in the clusters: sessions and caches belong in
+  Azure PaaS (e.g. Azure Cache for Redis) or in the token. Without affinity, a failed or drained cluster loses no user
+  sessions, and the load stays even.
+- **Both clusters always prove that they work.** A cluster that only receives traffic in a failure is a cold standby
+  with cold caches and untested capacity. With active-active, a cluster failure only removes half (or a third) of the
+  backends, and the health probes remove it within seconds.
+- **Long-lived connections** (WebSockets, Server-Sent Events, gRPC streaming) naturally stay on one cluster for the
+  life of the connection. Applications that use them must reconnect with back-off, because draining a cluster closes
+  them after the drain timeout.
+- **Exceptions:** an application that cannot avoid server-side session state gets cookie-based affinity on its own
+  route as a documented exception. It must still survive a cluster being drained (the affinity moves to the other
+  cluster).
+
+How the traffic layer is configured:
+
+| Setting | Front Door (external) | Application Gateway (internal) |
+|---|---|---|
+| Load balancing | Weighted round robin, equal weights, all origins in the same priority; *additional latency* large enough that all clusters of the region count as equally fast | Round robin over the backend pool (Application Gateway v2 has no backend weights) |
+| Session affinity | Off | Off (cookie-based affinity only as an exception per route) |
+| Health probe | HTTPS `GET` to the zone's Traefik health route, which answers only when Traefik and its routes are ready | Same |
+| Take a cluster out | Disable the cluster's origin | Remove the cluster's IP from the backend pool; connection draining on, e.g. 300 s |
+| Return a cluster gradually | Raise the cluster's origin weight from 10 % to 50 % to 100 % of the other clusters' weight | Not possible: after smoke tests through the cluster's own test host name (below) the cluster is added back to the pool in one step |
+
+Every Traefik gateway also answers to a **per-cluster test host name** (e.g. `*.sl-az1.int-fi.prd.example.com`,
+internal DNS only), published through the same Application Gateway as an extra listener whose backend pool contains
+only that cluster. The upgrade pipeline runs its smoke and synthetic tests through the real WAF and TLS path before
+the cluster gets user traffic back ([section 12](#stateless-clusters)).
+
+The internal Application Gateways live in a separate **edge VNet** per environment (`vnet-<env>-edge`), peered to the
+hub. Each internal zone's gateway is in its own subnet inside the zone's address space ([address plan](#vnets-and-address-plan)), so
+the Firewall rule "edge `int-fi` → stateless `int-fi`" is again expressed with zone prefixes. The gateways use the
+[private-only deployment](https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-private-deployment),
+which allows the UDR `0.0.0.0/0` and the cluster prefixes → Firewall. External zones need no subnet there, because Front
+Door is a global service that reaches the clusters through Private Link: the Traefik `Service` in `<zone>-ingress`
+creates the Private Link Service itself (`service.beta.kubernetes.io/azure-pls-create: "true"`), and the NSG of
+`snet-ext-<country>-ilb` allows TCP 443 only from the Private Link Service's NAT IPs. This traffic does not pass the hub
+Firewall; the Front Door WAF and Traefik are its controls.
 
 ### VNets and address plan
 
@@ -322,14 +378,14 @@ Why not one common VNet?
 | Change one cluster at a time (R12) | Yes – a VNet change (address space, DNS servers, VNet encryption, peering) affects one cluster, and a stateless cluster can be rebuilt with a fresh VNet | No – every VNet change hits all clusters at once | No for the stateless clusters – a VNet change hits all of them at once |
 | VNet settings per cluster type | VNet encryption on the stateless VNets only, other DNS/egress settings for the backend | One setting for all | Yes |
 | One prefix per zone | Yes – from the address plan below | Yes | Yes |
-| Extra cost | 3–4 hub peerings per environment; the address space of a new zone is added in each cluster VNet (an IaC loop) | – | – |
+| Extra cost | 3–4 hub peerings per environment (plus the edge VNet, needed in every option); the address space of a new zone is added in each cluster VNet (an IaC loop) | – | – |
 
 The usual reason to share a VNet – one summarisable prefix per zone – is achieved by the address plan instead, so
 the separate VNets cost almost nothing. The only real cost is that each new zone is added to 3–4 VNets instead of 1.
 
 **Address plan (example).** Every environment gets a `/12`, every country a `/16` of it, and every isolation zone
-a `/17` (internal first half, external second half). Inside a zone's `/17` the stateless clusters use the first
-`/18` and the stateful cluster the second `/18`, one `/20` per cluster. That `/20` is added as an address space
+a `/17` (internal first half, external second half). Inside a zone's `/17` the frontend (stateless clusters and the
+zone's internal Application Gateway) uses the first `/18` and the stateful cluster the second `/18`, one `/20` each. That `/20` is added as an address space
 to the cluster's VNet, and inside it the subnet layout of [picture 2](#2-network-layout) is reused. The platform
 `/16` holds the control plane zone of every cluster in the same way.
 
@@ -347,9 +403,13 @@ Layout of one zone, prd `int-fi` `10.49.0.0/17` (`ext-fi` is the same from `10.4
 | `10.49.0.0/20` | `int-fi` in `sl-az1` | `vnet-prd-sl-az1` |
 | `10.49.16.0/20` | `int-fi` in `sl-az2` | `vnet-prd-sl-az2` |
 | `10.49.32.0/20` | `int-fi` in `sl-az3` (optional) | `vnet-prd-sl-az3` |
-| `10.49.48.0/20` | Spare: side-by-side rebuild of a stateless cluster in a fresh VNet | – |
+| `10.49.48.0/20` | `int-fi` internal Application Gateway ([ingress](#ingress-traffic-from-outside-and-from-inside)); unused in external zones | `vnet-prd-edge` |
 | `10.49.64.0/20` | `int-fi` in the stateful cluster | `vnet-prd-sf` |
 | `10.49.80.0/20` – `10.49.112.0/20` | Reserve: more pod IPs for the stateful cluster (added as another address space) | `vnet-prd-sf` |
+
+A stateless cluster that is rebuilt with a fresh VNet reuses its own `/20`s: it is drained first, so the old cluster
+and VNet are deleted before the new ones are created (the other clusters carry the load, N+1). In dev and acc, which
+have no `sl-az3`, that slot can host a side-by-side rebuild instead.
 
 So `vnet-prd-sl-az1` has the address spaces `10.48.0.0/20` (control plane), `10.49.0.0/20` (`int-fi`),
 `10.49.128.0/20` (`ext-fi`), `10.50.0.0/20` (`int-se`) and `10.50.128.0/20` (`ext-se`). The prefixes summarise in
@@ -360,11 +420,12 @@ the way the rules are written:
 | Everything in the environment | `10.48.0.0/12` |
 | Country `fi` (both zones) | `10.49.0.0/16` |
 | Zone `int-fi`, all clusters | `10.49.0.0/17` |
-| Zone `int-fi`, stateless clusters (frontend) | `10.49.0.0/18` |
+| Zone `int-fi`, frontend (stateless clusters and its Application Gateway) | `10.49.0.0/18` |
 | Zone `int-fi`, stateful cluster (backend) | `10.49.64.0/18` |
 
 The rule "stateless zone *X* → stateful zone *X*" is therefore one Firewall rule per zone (`10.49.0.0/18 →
-10.49.64.0/18`), and it does not change when a stateless cluster is added or rebuilt. The `/20` per zone and
+10.49.64.0/18`), and it does not change when a stateless cluster is added or rebuilt. The stateful `/18` is reserved even
+while an environment has no stateful cluster. The `/20` per zone and
 cluster is generous for the stateless clusters (nodes only); it is sized for the stateful cluster's pod subnets.
 If the corporate network cannot spare three `/12`s, the same structure works one level smaller (`/17` per
 country). The AKS service CIDR and the overlay pod CIDR of the stateless clusters must stay outside all of these
@@ -377,7 +438,8 @@ dev → acc → prd, and the existing zones only get new routes and Firewall rul
 
 1. **Allocate** the country's next `/16` per environment from the address plan (kept in IaC, or in an Azure
    Virtual Network Manager IP address pool).
-2. **Address spaces:** add the zones' `/20`s to each cluster VNet and sync the hub peering
+2. **Address spaces:** add the zones' `/20`s to each cluster VNet (and the internal zone's edge `/20` to the edge
+   VNet) and sync the hub peering
    (`az network vnet peering sync`). Both are online operations; the new prefixes are then advertised to
    on-premises through the hub gateway automatically.
 3. **Subnets, NSGs, route tables** for the new zones; add a route for each new address space to the existing zones'
@@ -388,6 +450,9 @@ dev → acc → prd, and the existing zones only get new routes and Firewall rul
    stateful cluster). Adding a node pool does not restart the existing ones.
 7. **Policies and Git:** the zone's Azure Policy mutation and validation, Traefik gateway and namespaces through
    Flux and the stateful pipeline.
+8. **Traffic layer:** the internal zone's Application Gateway in the edge VNet and the external zone's WAF policy,
+   origin group and Private Link origins in Front Door; approve the Private Link connections. Existing zones' entry
+   points do not change.
 
 In the backend spoke each isolation zone's `snet-<zone>-pe` also holds the private endpoints of that zone's PaaS
 services (SQL, Storage, Service Bus, …); a shared `snet-shared-pe` holds the ACR private endpoint used by all clusters
@@ -410,19 +475,29 @@ the full load of the environment (N+1). Only the stateful spoke has pod subnets.
 Azure Monitor is reached through an Azure Monitor Private Link Scope. Other AKS add-ons that need public Azure
 endpoints are not enabled in the stateful cluster; the Azure Policy add-on is the one accepted exception ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)).
 
-## 9. Environments (nine clusters)
+## 9. Environments (six to nine clusters)
 
 ![Environments](images/09-environments.svg)
 
 | Environment | Subscription | Stateless | Stateful | Clusters |
 |---|---|---|---|---|
-| dev | `sub-aks-dev` | `aks-dev-sl-az1`, `aks-dev-sl-az2` | `aks-dev-sf` | 3 |
-| acc | `sub-aks-acc` | `aks-acc-sl-az1`, `aks-acc-sl-az2` | `aks-acc-sf` | 3 |
-| prd | `sub-aks-prd` | `aks-prd-sl-az1`, `aks-prd-sl-az2` (+ `aks-prd-sl-az3`) | `aks-prd-sf` | 3 (4) |
+| dev | `sub-aks-dev` | `aks-dev-sl-az1`, `aks-dev-sl-az2` | (`aks-dev-sf`) | 2 (3) |
+| acc | `sub-aks-acc` | `aks-acc-sl-az1`, `aks-acc-sl-az2` | (`aks-acc-sf`) | 2 (3) |
+| prd | `sub-aks-prd` | `aks-prd-sl-az1`, `aks-prd-sl-az2` (+ `aks-prd-sl-az3`) | (`aks-prd-sf`) | 2–3 (3–4) |
 
-**Minimum 9 clusters**, 10 with a third stateless cluster in prd, 12 with three everywhere. dev and acc must have the
-*same topology* as prd (at least two stateless clusters and a three-AZ stateful cluster), otherwise the upgrade
-procedures cannot be rehearsed there; they can use smaller VM sizes and lower autoscaler limits.
+**Minimum 6 clusters**, 9 with the stateful cluster; one more per environment that gets a third stateless cluster.
+dev and acc must have the *same topology* as prd (at least two stateless clusters, and a three-AZ stateful cluster if
+prd has one), otherwise the upgrade procedures cannot be rehearsed there; they can use smaller VM sizes and lower
+autoscaler limits.
+
+> **The stateful cluster is optional.** It is not built until the first workload has an approved stateful-cluster
+> exception ([where does a workload run](#where-does-a-workload-run)); until then every environment runs only the stateless
+> clusters and Azure PaaS. The backend network itself exists from day one, because it holds the PaaS private endpoints
+> and the ACR. Everything the stateful cluster needs later is already prepared, so adding it is an ordinary IaC change
+> with no impact on the running platform: its `/18` per zone is reserved in the address plan, the stateful cluster
+> module and pipeline are kept in the repository, and the Firewall rules for "stateless zone *X* → stateful zone *X*"
+> are only created with it. The same exception review also lets the platform team remove the stateful cluster again
+> when its last workload moves to a PaaS service.
 
 - **Clusters are cattle, built by IaC.** An environment module creates what all clusters of an environment share
   and what must survive a cluster rebuild: the Key Vaults per zone (with the application secrets), the platform Key
@@ -558,12 +633,14 @@ One zonal cluster at a time is **taken out of traffic, upgraded and returned** �
 being changed:
 
 1. pre-scale the remaining cluster(s) to full-load capacity;
-2. set the cluster's weight to 0 in the traffic layer and wait for connection draining;
+2. take the cluster out of the traffic layer (disable its Front Door origins, remove it from the Application Gateway
+   backend pools) and wait for connection draining;
 3. upgrade control plane and node pools – or, for large changes (new VNet, CNI, OS SKU), **create a fresh cluster**
    from IaC and let Flux bootstrap it (blue/green at cluster level);
-4. wait until all Flux Kustomizations are `Ready`, run smoke and synthetic tests against the cluster's own Traefik gateways;
-5. return traffic gradually (10 % → 50 % → 100 %) while watching error-rate and latency SLOs; on breach set the
-   weight back to 0 and stop;
+4. wait until all Flux Kustomizations are `Ready`, run smoke and synthetic tests through the cluster's per-cluster test
+   host names ([ingress](#ingress-traffic-from-outside-and-from-inside));
+5. return traffic while watching error-rate and latency SLOs – gradually with Front Door weights (10 % → 50 % → 100 %),
+   in one step to the Application Gateway backend pools; on breach take the cluster out again and stop;
 6. repeat for the next zonal cluster.
 
 Node image / OS security updates use the same procedure or – because every app has ≥ 2 replicas and a PDB – the AKS
@@ -756,7 +833,9 @@ Limits of the add-on and how the design handles them:
 - Can the corporate IP plan reserve a `/12` per environment for the platform (or a `/17` per country if not), and
   is the platform the owner of these prefixes in the central IPAM?
 - Is CoreDNS on the shared system pool acceptable, or should each zone run its own DNS (e.g. NodeLocal DNS)?
-- Should external zones share one Application Gateway for Containers or keep one WAF per zone (current draft)?
+- One Front Door profile per environment with a WAF policy per external zone (current draft), or a profile per zone?
+- Is the Application Gateway's one-step return of an upgraded cluster acceptable for internal zones, or is gradual
+  return needed there too?
 - Key Vault ABAC is preview – acceptable for production, or fall back to vault per application until GA? (Affects only
   applications with a secret exception.)
 - Which application stacks lack Entra ID support in their drivers/SDKs, and are they upgraded or given a secret
@@ -765,8 +844,9 @@ Limits of the add-on and how the design handles them:
   an AZ outage *during* an upgrade leaves no redundancy; three needs only 50 % headroom per cluster.
 - "No Internet" for the stateful cluster: is the Entra ID (`AzureActiveDirectory` service tag) exception for workload
   identity acceptable, or must stateful workloads avoid Entra-authenticated access?
-- Which workloads are expected to get a stateful-cluster exception? If none remain after the PaaS review, the
-  stateful cluster could be left out of an environment entirely.
+- Which workloads are expected to get a stateful-cluster exception, and when? The stateful cluster is built only when
+  the first one is approved; is it then built in all three environments at once (recommended, to keep the topology
+  identical)?
 - Is one wildcard certificate per zone and environment acceptable, or do some applications need their own
   certificate (own key)?
 - One platform Key Vault per environment shared by all zones (current draft), or one certificate vault per zone and
@@ -775,8 +855,6 @@ Limits of the add-on and how the design handles them:
   validation zone.
 - "No Internet" for the stateful cluster: are the Azure Policy add-on FQDNs acceptable as a second exception next to
   Entra ID?
-- Traffic layer: Application Gateway per environment, or Azure Front Door Premium for external zones (also enables a
-  second region later)?
 
 ## Editing the pictures
 

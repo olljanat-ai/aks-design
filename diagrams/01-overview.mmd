@@ -31,8 +31,8 @@ flowchart TB
         end
         subgraph EXT["External workloads"]
             direction TB
-            extfi["ext-fi<br/>subnets · node pool · Key Vault<br/>App Gateway WAF"]
-            extse["ext-se<br/>subnets · node pool · Key Vault<br/>App Gateway WAF"]
+            extfi["ext-fi<br/>subnets · node pool · Key Vault<br/>Traefik ILB + Private Link Service"]
+            extse["ext-se<br/>subnets · node pool · Key Vault<br/>Traefik ILB + Private Link Service"]
         end
     end
 
@@ -41,8 +41,8 @@ flowchart TB
     HUB ===|"VNet peering"| MGMT
     HUB ===|"VNet peering<br/>UDR 0.0.0.0/0 → Firewall<br/>from every subnet"| SPOKE
     jump --> pe_api -.->|"Private Link"| api
-    internet ==>|"HTTPS (WAF)"| EXT
-    fw ==>|"corporate users<br/>via Firewall"| INT
+    internet ==>|"HTTPS via Front Door WAF<br/>(Private Link)"| EXT
+    fw ==>|"corporate users via Firewall<br/>+ internal App Gateway (edge VNet)"| INT
 
     classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
     classDef cp fill:#eceff1,stroke:#455a64,color:#000

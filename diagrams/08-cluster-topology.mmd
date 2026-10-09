@@ -1,13 +1,13 @@
 %% Cluster topology of ONE environment (dev, acc and prd are identical): zonal stateless clusters in the
-%% frontend network, one zone-redundant stateful cluster in the backend network next to the Azure PaaS services.
+%% frontend network, an optional zone-redundant stateful cluster in the backend network next to the Azure PaaS services.
 flowchart TB
     internet(("Internet"))
     corp["Corporate network<br/>(via hub Firewall)"]
 
-    subgraph EDGE["Traffic layer (zone-redundant, health-probed, weighted)"]
+    subgraph EDGE["Traffic layer – one entry point per zone, active-active, per request, no session affinity"]
         direction LR
-        waf["Application Gateway WAF v2 / Front Door<br/>external zones"]
-        agw_in["Internal Application Gateway<br/>internal zones"]
+        waf["Azure Front Door Premium + WAF<br/>external zones<br/>weighted origins via Private Link"]
+        agw_in["Internal Application Gateway WAF v2<br/>internal zones · vnet-&lt;env&gt;-edge<br/>round robin backend pool"]
     end
 
     subgraph FRONT["Frontend network – stateless clusters, one per availability zone"]
@@ -22,7 +22,7 @@ flowchart TB
 
     subgraph BACK["Backend network – no Internet route in either direction"]
         direction LR
-        sf["<b>aks-&lt;env&gt;-sf</b> (single cluster, last option)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none<br/>Azure CNI (VNet) · no ingress / Gateway API<br/>internal LB Services · TLS by the application"]
+        sf["<b>aks-&lt;env&gt;-sf</b> (optional, last option –<br/>built with the first approved exception)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none<br/>Azure CNI (VNet) · no ingress / Gateway API<br/>internal LB Services · TLS by the application"]
         subgraph PAAS["Azure PaaS – first choice for data, private endpoints only"]
             direction TB
             db["Azure SQL / PostgreSQL<br/>(zone-redundant)"]
@@ -36,7 +36,7 @@ flowchart TB
 
     internet ==>|"HTTPS"| waf
     corp ==> agw_in
-    EDGE ==>|"HTTPS · backend pool = Traefik ILB of every stateless cluster<br/>probe failure or weight 0 removes a cluster"| FRONT
+    EDGE ==>|"HTTPS · backends = Traefik ILB of the zone in every stateless cluster<br/>client TLS ends at the edge · probe failure or drain removes a cluster"| FRONT
     FRONT -->|"egress + east-west"| fw
     fw -->|"TLS only: PaaS private endpoints (preferred),<br/>stateful app internal LBs"| BACK
     sf --> PAAS
@@ -46,7 +46,7 @@ flowchart TB
 
     classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
     classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
-    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
+    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000,stroke-dasharray: 5 5
     classDef paas fill:#eceff1,stroke:#455a64,color:#000
     classDef opt fill:#f5f5f5,stroke:#9e9e9e,color:#000,stroke-dasharray: 5 5
     classDef off fill:#ffebee,stroke:#c62828,color:#000
