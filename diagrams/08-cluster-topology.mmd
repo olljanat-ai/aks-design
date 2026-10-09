@@ -22,7 +22,7 @@ flowchart TB
 
     subgraph BACK["Backend network – no Internet route in either direction"]
         direction LR
-        sf["<b>aks-&lt;env&gt;-sf</b> (optional, last option –<br/>built with the first approved exception)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none<br/>Azure CNI (VNet) · no ingress / Gateway API<br/>internal LB Services · TLS by the application"]
+        sf["<b>aks-&lt;env&gt;-sf</b> (optional, last option –<br/>built with the first approved exception)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none<br/>Azure CNI (VNet) · no Gateway API, no Ingress<br/>internal LB Services · TLS by the application"]
         subgraph PAAS["Azure PaaS – first choice for data, private endpoints only"]
             direction TB
             db["Azure SQL / PostgreSQL<br/>(zone-redundant)"]

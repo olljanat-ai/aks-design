@@ -1,6 +1,6 @@
 %% Encryption in transit. Stateless: TLS ends at the zone's Traefik gateway (Let's Encrypt certificate for an internal
 %% name), node-to-node traffic is protected by Azure VNet encryption, so apps need no TLS, mTLS or service mesh.
-%% Stateful: no ingress at all, the application terminates TLS on its own internal load balancer.
+%% Stateful: no Gateway API and no Ingress at all, the application terminates TLS on its own internal load balancer.
 %% Certificates are issued once per zone and environment by a job per environment into the environment's single platform
 %% Key Vault and shared by all clusters of that environment.
 flowchart LR
@@ -28,7 +28,7 @@ flowchart LR
         end
     end
 
-    subgraph SF["Stateful cluster · Azure CNI (VNet) · no ingress / Gateway API"]
+    subgraph SF["Stateful cluster · Azure CNI (VNet) · no Gateway API, no Ingress"]
         direction TB
         ilb["Internal LB Service<br/>snet-ext-fi-ilb"]
         db["app-x pod<br/>terminates TLS itself<br/>same zone cert as PEM files (CSI)"]
