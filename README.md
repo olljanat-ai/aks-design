@@ -22,7 +22,7 @@ encrypted.
 | R1 | Control plane in a dedicated network | Private, VNet-integrated API server in its own delegated subnet; admin access only via Private Link from a separate management VNet ([picture 3](#3-control-plane)) |
 | R2 | Internal and external workloads isolated | Separate isolation zones `int-*` and `ext-*` |
 | R3 | Workloads of different countries isolated | Separate isolation zones per country (`*-fi`, `*-se`, …) |
-| R4 | Isolation = Key Vault + network + node pool per type | Every zone has its own Key Vault, subnets (NSG + route table) and node pool; certificates are the one shared exception, kept in the per-environment platform Key Vault with a role assignment per certificate |
+| R4 | Isolation = Key Vault + network + node pool per type | Every zone has its own Key Vault, subnets (NSG + route table) and nodes – a node auto provisioning `NodePool` in the stateless clusters, AKS node pools in the stateful cluster ([section 4](#4-node-pools)); certificates are the one shared exception, kept in the per-environment platform Key Vault with a role assignment per certificate |
 | R5 | Only connectivity mandatory for Kubernetes allowed between zones | Deny-by-default on three layers: NSG, Azure Firewall, Cilium network policy ([picture 5](#5-allowed-and-blocked-flows)) |
 | R6 | Applications isolated in namespaces + network policies | Namespace per application, default-deny policies ([picture 7](#7-application-multi-tenancy-inside-a-zone)) |
 | R7 | Key Vault multi-tenancy with [Azure RBAC + ABAC](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-abac) | Per-application workload identity with secret-name-prefix conditions ([picture 6](#6-workload-identity-first-key-vault-secrets-only-when-needed)) |
@@ -32,22 +32,22 @@ encrypted.
 | R9 | Stateful cluster exists at most once, in the backend network with the Azure PaaS services, no Internet connectivity at all | Backend spoke with PaaS private endpoints; network isolated AKS (outbound type `none`), no public IPs, Firewall deny-all for backend prefixes |
 | R9a | Stateful cluster: VNet-integrated CNI, no Gateway API implementation (and no Ingress), applications handle TLS | Azure CNI (VNet, dynamic pod IP allocation) powered by Cilium; applications are published with internal `LoadBalancer` Services and terminate TLS themselves ([section 13](#13-encryption-in-transit-and-tls)) |
 | R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API (no Kubernetes Ingress) | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names, distributed through Key Vault, and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
-| R10 | Stateful cluster spread over availability zones and running AKS LTS | Node pools per AZ 1/2/3, ZRS storage, Premium tier with Long Term Support |
-| R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, cluster autoscaler |
+| R10 | Stateful cluster spread over availability zones and running AKS LTS | Fixed-size node pools per AZ 1/2/3 (no autoscaling), ZRS storage, Premium tier with Long Term Support |
+| R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, [node auto provisioning](https://learn.microsoft.com/en-us/azure/aks/node-autoprovision) (NAP) |
 | R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, releases one cell at a time with cell affinity, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
 | R13 | dev, acc and prd environments kept in sync | 3 × 2 = 6 clusters (3 × 3 = 9 with the stateful cluster) from the same IaC modules, all in-cluster state from one Git repository: FluxCD in the stateless clusters, CI/CD pipeline in the stateful cluster ([picture 9](#9-environments-six-to-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
 | R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
 | R15 | Certificates distributed through Key Vault, shared by all clusters | One shared **platform Key Vault per environment** (`kv-<env>-platform`) holds all certificates of that environment; a renewal job per environment issues one certificate per zone into it, and all clusters of the environment read it with plain Azure RBAC scoped to the individual certificate ([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
-| R16 | Countries can be added online | One address space per zone in every cluster VNet, taken from a per-country prefix; a new country adds address spaces, subnets and node pools; existing zones only get new routes and Firewall rules ([VNets and address plan](#vnets-and-address-plan)) |
+| R16 | Countries can be added online | One address space per zone in every cluster VNet, taken from a per-country prefix; a new country adds address spaces, subnets and NAP `NodePool`s / node pools; existing zones only get new routes and Firewall rules ([VNets and address plan](#vnets-and-address-plan)) |
 
 **Isolation zone** = one *type* = one combination of exposure × country:
 
-| Zone | Exposure | Country | Node pool | Key Vault (one per environment) | Subnets |
-|---|---|---|---|---|---|
-| `int-fi` | internal | FI | `intfi` | `kv-<env>-int-fi` | `snet-int-fi-*` |
-| `int-se` | internal | SE | `intse` | `kv-<env>-int-se` | `snet-int-se-*` |
-| `ext-fi` | external | FI | `extfi` | `kv-<env>-ext-fi` | `snet-ext-fi-*` |
-| `ext-se` | external | SE | `extse` | `kv-<env>-ext-se` | `snet-ext-se-*` |
+| Zone | Exposure | Country | NAP `NodePool` (stateless) | Node pools (stateful) | Key Vault (one per environment) | Subnets |
+|---|---|---|---|---|---|---|
+| `int-fi` | internal | FI | `intfi` | `intfiz1`–`z3` | `kv-<env>-int-fi` | `snet-int-fi-*` |
+| `int-se` | internal | SE | `intse` | `intsez1`–`z3` | `kv-<env>-int-se` | `snet-int-se-*` |
+| `ext-fi` | external | FI | `extfi` | `extfiz1`–`z3` | `kv-<env>-ext-fi` | `snet-ext-fi-*` |
+| `ext-se` | external | SE | `extse` | `extsez1`–`z3` | `kv-<env>-ext-se` | `snet-ext-se-*` |
 
 Adding a country adds two zones (`int-xx`, `ext-xx`) following the same pattern, online ([adding a country](#adding-a-country-online)).
 
@@ -70,7 +70,7 @@ The design uses two isolation patterns at two levels, and this document uses the
 |---|---|---|---|
 | **Cell** | One stateless cluster (`aks-<env>-sl-az<N>`) with its own VNet, all of it in one availability zone, running a full copy of every application of every isolation zone | [Cell-based architecture](https://docs.aws.amazon.com/solutions/cell-based-architecture-for-amazon-eks/) | An availability zone outage, a cluster failure, a bad release or a bad cluster upgrade: changes reach one cell at a time |
 | **Cell router** | The traffic layer: Front Door for external zones, NGINXaaS for internal zones; maps each client IP to a cell ([incoming traffic](#incoming-traffic-from-outside-and-from-inside)) | Cell-based architecture | – (zone-redundant, outside the cells) |
-| **Isolation zone** | One exposure × country (`int-fi`, `ext-se`, …) with its own address space, subnets, node pool, Key Vault and policies, present in every cell | [Bulkhead](https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead) | A noisy, failing or compromised workload of one zone: it cannot use another zone's nodes, network or secrets |
+| **Isolation zone** | One exposure × country (`int-fi`, `ext-se`, …) with its own address space, subnets, nodes, Key Vault and policies, present in every cell | [Bulkhead](https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead) | A noisy, failing or compromised workload of one zone: it cannot use another zone's nodes, network or secrets |
 | **Shared tier** | Hub (Firewall, gateways, DNS), Azure PaaS, ACR, Key Vaults, the optional stateful cluster | – | Not split into cells; zone-redundant instead, and changed with extra care |
 
 Two differences from the classic cell-based architecture:
@@ -119,8 +119,9 @@ existing ones never change. Whether the zone also has a pod subnet depends on th
 | `snet-<zone>-pods` | Yes | Not needed |
 | `snet-<zone>-ilb` | Internal load balancers of the applications' `LoadBalancer` Services | Internal load balancer of the zone's Traefik gateway |
 
-Zone isolation works the same with both CNIs because every zone has its own node pool in its own node subnet: a
-packet from a stateless zone always carries an address of that zone's subnets.
+Zone isolation works the same with both CNIs because every zone has its own nodes in its own node subnet (a NAP
+`NodePool` whose `AKSNodeClass` points at the zone's subnet, or AKS node pools in the stateful cluster): a packet from
+a stateless zone always carries an address of that zone's subnets.
 Every subnet has its own **NSG** (deny VNet-to-VNet by default) and each zone its own **route table** sending
 `0.0.0.0/0` *and the other zones' address spaces* to Azure Firewall, so any cross-zone packet that the NSG would allow
 is still inspected and denied by the firewall.
@@ -148,19 +149,52 @@ The API server uses **API Server VNet Integration**: it is projected as an inter
 dedicated, delegated `snet-apiserver` (/28) that contains nothing else. The cluster is **private** (public
 endpoint disabled). Admins (Entra ID + PIM, Azure RBAC for Kubernetes) and CI/CD reach it only through a
 Private Endpoint / Private Link Service in the management VNet. Nodes talk to the ILB IP directly (no tunnel,
-no DNS). The system node pool (tainted `CriticalAddonsOnly`) runs only platform components.
+no DNS). The system node pool (tainted `CriticalAddonsOnly`, fixed node count) runs only platform components.
 
 ## 4. Node pools
 
 ![Node pools](images/04-node-pools.svg)
 
-One node pool per zone, placed in that zone's subnets and tainted `platform/zone=<zone>:NoSchedule`.
+Every isolation zone has its own nodes in that zone's subnets, labelled `platform/zone=<zone>` and tainted
+`platform/zone=<zone>:NoSchedule`. How the nodes are created differs per cluster type, because the two cluster types
+run different kinds of workloads:
+
+| | Stateless clusters | Stateful cluster |
+|---|---|---|
+| Zone nodes | [Node auto provisioning](https://learn.microsoft.com/en-us/azure/aks/node-autoprovision) (NAP, AKS-managed Karpenter): one Karpenter `NodePool` + `AKSNodeClass` per zone (`intfi`, `extfi`, …); no classic node pools for workloads | Classic AKS node pools (VM scale sets), one per zone *and* AZ (`intfiz1`, `intfiz2`, `intfiz3`, …) |
+| Subnet | `AKSNodeClass` `vnetSubnetID` = the zone's `snet-<zone>-nodes` | `--vnet-subnet-id` `snet-<zone>-nodes`, `--pod-subnet-id` `snet-<zone>-pods` |
+| Availability zone | `NodePool` requirement `topology.kubernetes.io/zone In [<region>-<N>]` – the cell's AZ | `--zones 1` / `2` / `3`, one pool per AZ |
+| VM sizes | Chosen by NAP for the pending pods from an allow-list of several VNet-encryption-capable SKU families in the `NodePool` requirements | One fixed size per pool, chosen when the workload's exception is onboarded |
+| Scaling | Nodes are created for pending pods and removed or consolidated when they are empty or under-used; the `NodePool` `limits` (CPU, memory) are the upper bound, sized for N+1 | **No autoscaling.** Fixed node count per pool, set in IaC; capacity changes are planned changes |
+| Node replacement | Drift (new node image or Kubernetes version), consolidation and `expireAfter`, limited by the `NodePool` disruption budgets; PDBs are respected | Surge upgrade per pool, one AZ at a time ([section 12](#stateful-cluster)) |
+| Defined by | Flux, in `infrastructure/stateless` (subnet IDs and AZ from the `cluster-vars` ConfigMap), applied before anything that runs on zone nodes | Cluster IaC |
+| System pool | Classic node pool `system`, fixed node count, pinned to the cell's AZ | Classic node pool `system`, fixed node count, spread over AZ 1–3 |
+
+**Why two models.** Stateless workloads scale on load all day and can be moved at any time, so NAP fits them: it
+picks the VM size from what the pending pods need, packs them tightly and gives unused nodes back, and the platform
+does not maintain a node pool per zone × VM size or plan the capacity of a freshly built cell. The stateful cluster
+runs a few approved StatefulSets and operators that are sized when they are onboarded and do not scale on load;
+every node change moves a replica and re-attaches its disks. Fixed-size node pools keep its capacity predictable,
+and its nodes change only in planned upgrades – never because an autoscaler decided to consolidate.
+
+NAP details in the stateless clusters:
+
+- NAP is enabled with `--node-provisioning-mode Auto`; the AKS-created default `NodePool`s are disabled
+  (`--node-provisioning-default-pools None`), so every NAP node belongs to a zone's `NodePool`. NAP requires Azure CNI
+  Overlay powered by Cilium, which the stateless clusters use anyway. The cluster autoscaler is not used anywhere.
+- Several SKU families in each allow-list lower the risk that the cell's single AZ runs out of capacity for one VM size
+  when a cell is pre-scaled to carry the full load ([section 12](#stateless-clusters)).
+- Disruption budgets keep consolidation slow (e.g. at most 10 % of a zone's nodes at a time) and block it while a cell
+  is being changed; all applications have ≥ 2 replicas and a PDB, so consolidation never takes an application down.
+- Only the platform manages `NodePool` and `AKSNodeClass` objects (Kubernetes RBAC), and Azure Policy rejects any whose
+  subnet, label, taint or VM sizes do not match its zone ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)).
+
 Application namespaces are named `<zone>-<app>` and carry the matching `platform/zone` label. The Azure Policy
 add-on injects the zone's `nodeSelector` and toleration into every pod (one mutation definition per zone, matched by
 the namespace prefix `<zone>-*`) and **rejects** pods that try to select or tolerate another zone. The checks use
 the namespace *name*, not a lookup of the namespace's labels, because custom Azure Policy definitions cannot use
 Gatekeeper data replication; a separate policy makes sure the label of a namespace matches its name prefix. Only platform
-DaemonSets (Cilium, CSI drivers, monitoring) run on all pools.
+DaemonSets (Cilium, CSI drivers, monitoring) run on all nodes.
 
 Note: the kubelet identity is cluster-wide in AKS, so it is **never** granted access to Key Vaults – workloads
 use workload identity only (picture 6).
@@ -307,7 +341,8 @@ stateful cluster runs, the smaller its blast radius and upgrade risk.
 |---|---|---|
 | Runs | Frontends, APIs, workers – anything that can be killed and recreated; state in Azure PaaS | Only approved exceptions: workloads that own data on disks (StatefulSets, operators) for which no PaaS service fits |
 | Count per environment | One per availability zone: `sl-az1`, `sl-az2` mandatory, `sl-az3` optional (recommended for prd) | Zero or one – built only when the first approved workload needs it |
-| Availability zones | All node pools of a cluster pinned to its AZ (`--zones <N>`); the cluster is the unit of failure | Every isolation zone has one node pool per AZ (`intfiz1`, `intfiz2`, `intfiz3`, …); system pool spread over AZ 1–3 |
+| Availability zones | All nodes of a cluster in its AZ (system pool `--zones <N>`, NAP `NodePool`s by zone requirement); the cluster is the unit of failure | Every isolation zone has one node pool per AZ (`intfiz1`, `intfiz2`, `intfiz3`, …); system pool spread over AZ 1–3 |
+| Nodes | [Node auto provisioning](https://learn.microsoft.com/en-us/azure/aks/node-autoprovision): one Karpenter `NodePool` per isolation zone, VM size chosen per workload ([section 4](#4-node-pools)) | Classic AKS node pools with a fixed VM size and node count |
 | Network | Frontend spoke `vnet-<env>-sl-az<N>`, peered to the hub | Backend spoke `vnet-<env>-sf`, peered to the hub, together with the PaaS private endpoints |
 | Internet | Egress only via Azure Firewall FQDN allow-list (outbound type `userDefinedRouting`); inbound only via the traffic layer | **None.** [Network isolated cluster](https://learn.microsoft.com/en-us/azure/aks/concepts-network-isolated) (outbound type `none`, bootstrap artifacts from the private ACR cache), no public IPs, UDR `0.0.0.0/0` → Firewall which denies all Internet for backend prefixes |
 | CNI | [Azure CNI Overlay](https://learn.microsoft.com/en-us/azure/aks/concepts-network-azure-cni-overlay) powered by Cilium | Azure CNI (VNet-integrated, dynamic pod IP allocation) powered by Cilium |
@@ -316,11 +351,11 @@ stateful cluster runs, the smaller its blast radius and upgrade risk.
 | Node-to-node encryption | [Azure Virtual Network encryption](https://learn.microsoft.com/en-us/azure/virtual-network/virtual-network-encryption-overview) – no service mesh, no mTLS | Application TLS (VNet encryption may be enabled as defence in depth but is not relied on) |
 | Kubernetes version | Standard support, latest GA minus one | [Long Term Support](https://learn.microsoft.com/en-us/azure/aks/long-term-support) (`--tier premium --k8s-support-plan AKSLongTermSupport`) |
 | Tier | Standard | Premium (required for LTS) |
-| Scaling | ≥ 2 replicas per app, HPA / KEDA on load, cluster autoscaler; **each cluster sized to carry 100 % of the load alone** | ≥ 3 replicas per StatefulSet, one per AZ; cluster autoscaler per AZ node pool |
+| Scaling | ≥ 2 replicas per app, HPA / KEDA on load, NAP adds and removes nodes; **each cluster sized to carry 100 % of the load alone** (NAP `NodePool` limits) | ≥ 3 replicas per StatefulSet, one per AZ; **no autoscaling** – fixed node count per pool, sized when an exception is onboarded and changed as a planned IaC change |
 | Storage | None – admission policy rejects PersistentVolumeClaims; ephemeral OS disks | Azure Disk `Premium_ZRS` / `StandardSSD_ZRS`, Azure Files ZRS; prefer PaaS for databases |
 | Upgrade model | Drain from traffic, upgrade or rebuild, return ([picture 11](#stateless-clusters)) | In place, one AZ at a time, PDB-protected ([picture 12](#stateful-cluster)) |
 
-**Isolation zones are kept in both cluster types.** Each stateless and the stateful cluster have the node pools,
+**Isolation zones are kept in both cluster types.** Each stateless and the stateful cluster have the nodes,
 subnets, Key Vaults and policies of zones `int-fi`, `int-se`, `ext-fi`, `ext-se` exactly as in pictures 2–7 – the data
 in the stateful cluster is what needs the country separation most. The stateful cluster has no Gateway API (and no Ingress) at all: each
 zone's applications are reachable only on their own internal load balancer IPs, and only from the same zone of the
@@ -481,8 +516,9 @@ dev → acc → prd, and the existing zones only get new routes and Firewall rul
    route tables (and the reverse). Give the cluster identity *Network Contributor* on the new subnets.
 4. **Firewall and on-premises:** new rules for the new zone prefixes (IP groups); the existing rules do not change.
 5. **Environment module:** zone Key Vaults, private endpoints, managed identities, certificate in the platform Key Vault.
-6. **Node pools** `intxx` / `extxx` in the new subnets (`--vnet-subnet-id`, plus `--pod-subnet-id` per AZ pool in the
-   stateful cluster). Adding a node pool does not restart the existing ones.
+6. **Nodes:** in the stateless clusters, NAP `NodePool`s and `AKSNodeClass`es `intxx` / `extxx` for the new subnets
+   (Flux, with the new subnet IDs in `cluster-vars`); in the stateful cluster, node pools `intxxz1`–`z3` /
+   `extxxz1`–`z3` (`--vnet-subnet-id`, `--pod-subnet-id`, fixed node count). Neither restarts existing nodes.
 7. **Policies and Git:** the zone's Azure Policy mutation and validation, Traefik gateway and namespaces through
    Flux and the stateful pipeline.
 8. **Traffic layer:** the internal zone's NGINXaaS deployment in the edge VNet and the external zone's WAF policy,
@@ -522,8 +558,8 @@ endpoints are not enabled in the stateful cluster; the Azure Policy add-on is th
 
 **Minimum 6 clusters**, 9 with the stateful cluster; one more per environment that gets a third stateless cluster.
 dev and acc must have the *same topology* as prd (at least two stateless clusters, and a three-AZ stateful cluster if
-prd has one), otherwise the upgrade procedures cannot be rehearsed there; they can use smaller VM sizes and lower
-autoscaler limits.
+prd has one), otherwise the upgrade procedures cannot be rehearsed there; they can use lower NAP `NodePool` limits and
+smaller stateful node pools.
 
 > **The stateful cluster is optional.** It is not built until the first workload has an approved stateful-cluster
 > exception ([where does a workload run](#where-does-a-workload-run)); until then every environment runs only the stateless
@@ -538,9 +574,9 @@ autoscaler limits.
   and what must survive a cluster rebuild: the Key Vaults per zone (with the application secrets), the platform Key
   Vault (with the environment's certificates and their role assignments), the application managed identities, the
   ACR and the Azure Policy assignments. Two cluster modules (stateless, stateful) with `env` and `az` as parameters
-  create the VNet, cluster, node pools, private endpoints to the shared zone and platform Key Vaults, the federated
+  create the VNet, cluster, system pool (and, in the stateful cluster, the zone node pools), private endpoints to the shared zone and platform Key Vaults, the federated
   credentials and – in stateless clusters – the Flux bootstrap. The IaC also writes a
-  `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`) that Flux uses for substitutions (the
+  `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`, the zones' node subnet IDs) that Flux uses for substitutions (the
   stateful pipeline sets the same variables itself).
 - **Everything inside a cluster comes from Git** – via Flux in the stateless clusters and via the deployment pipeline
   in the stateful cluster; no manual `kubectl apply`. Human access in acc and prd is read-only Kubernetes RBAC plus
@@ -563,7 +599,7 @@ fleet/
 │   └── prd/{sl-az1,sl-az2,sl-az3}/
 ├── infrastructure/
 │   ├── base/                      # Cilium policies, Secrets Store CSI settings, monitoring
-│   ├── stateless/                 # Traefik + Gateways + certificate SecretProviderClass per zone, HPA/KEDA
+│   ├── stateless/                 # NAP NodePool + AKSNodeClass per zone, Traefik + Gateways + certificate SecretProviderClass per zone, KEDA
 │   └── stateful/                  # storage classes (ZRS), operators (no Gateway API) – applied by the pipeline
 └── apps/
     └── <app>/
@@ -645,11 +681,14 @@ application can be deployed in a way that breaks a zero-downtime rollout or a no
 | Rollout strategy | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 25%` | `RollingUpdate` (optionally `partition` for canary) or operator-managed |
 | Probes | readiness + liveness (+ startup) required | readiness gated on replication / quorum |
 | Graceful shutdown | `preStop` delay + `terminationGracePeriodSeconds` longer than the gateway / traffic layer drain time | same, plus clean leader hand-over |
-| Resources | requests required (HPA and autoscaler depend on them) | requests = limits for memory |
+| Resources | requests required (HPA and NAP depend on them) | requests = limits for memory |
 | Images | by digest, from the environment's ACR only | same |
 
-- **Scaling on load**: HPA on CPU/memory or KEDA on queue length / request rate; the cluster autoscaler adds nodes.
-  In stateless clusters `maxReplicas` and autoscaler limits are sized so that one cluster can take the full load.
+- **Scaling on load** (stateless): HPA on CPU/memory or KEDA on queue length / request rate; NAP adds nodes for
+  pods that do not fit and consolidates them away again. `maxReplicas` and the NAP `NodePool` limits are sized so that
+  one cluster can take the full load.
+- **No scaling on load in the stateful cluster**: replica counts and node pool sizes are fixed and changed as planned
+  changes through the pipeline and IaC.
 - **Compatibility rule**: during a release two versions run at the same time (in different cells, and for a few
   minutes inside a cell during the rolling update), so API and message changes must be backwards compatible and
   database changes follow *expand → migrate → contract* over separate releases. Client-IP affinity reduces what
@@ -713,7 +752,8 @@ two never run in the same cell at the same time:
 1. pre-scale the remaining cluster(s) to full-load capacity;
 2. take the cell out of the traffic layer (disable its Front Door origins, mark it `down` in the NGINXaaS upstreams)
    and wait for connection draining;
-3. upgrade control plane and node pools – or, for large changes (new VNet, CNI, OS SKU), **create a fresh cluster**
+3. upgrade the control plane and the system pool; NAP then replaces the zone nodes with the new node image and
+   version through drift (the cell's `NodePool` disruption budgets are opened for this while it is out of traffic) – or, for large changes (new VNet, CNI, OS SKU), **create a fresh cluster**
    from IaC and let Flux bootstrap it (blue/green at cluster level);
 4. wait until all Flux Kustomizations are `Ready`, run smoke and synthetic tests through the cell's per-cell test
    host names ([incoming traffic](#incoming-traffic-from-outside-and-from-inside));
@@ -722,8 +762,9 @@ two never run in the same cell at the same time:
 6. repeat for the next cell.
 
 Node image / OS security updates use the same procedure or – because every app has ≥ 2 replicas and a PDB – the AKS
-node OS auto-upgrade channel in maintenance windows staggered per cluster (`sl-az1` and `sl-az2` never on the same day).
-Prerequisite for all of this is **N+1 capacity**: autoscaler limits, vCPU quota and node subnet size must allow one
+node OS auto-upgrade channel in maintenance windows staggered per cluster (`sl-az1` and `sl-az2` never on the same day);
+NAP rolls new node images out to its nodes through drift within its disruption budgets.
+Prerequisite for all of this is **N+1 capacity**: NAP `NodePool` limits, vCPU quota and node subnet size must allow one
 cluster to carry the whole environment.
 
 ### Stateful cluster
@@ -736,10 +777,11 @@ There is only one stateful cluster, so it is upgraded **in place** and protected
   planned maintenance window (`aksManagedAutoUpgradeSchedule`, `aksManagedNodeOSUpgradeSchedule`) staggered so that
   dev is upgraded a week before acc and two weeks before prd.
 - **Control plane**: zone-redundant (Premium tier); upgrading it does not restart workloads.
-- **Node pools**: one pool per isolation zone *and* AZ, so a pool upgrade touches only one AZ. Surge settings
+- **Node pools**: one fixed-size pool per isolation zone *and* AZ, so a pool upgrade touches only one AZ. Surge settings
   `maxSurge: 1`, `maxUnavailable: 0`, a drain timeout and node soak time; drains respect the PDBs, so at most one
   replica of each StatefulSet is down at any moment. The surge node is created in the same AZ, so zonal disks
-  re-attach; ZRS disks additionally allow a pod to move to another AZ.
+  re-attach; ZRS disks additionally allow a pod to move to another AZ. The vCPU quota must leave room for the surge nodes,
+  because the pools do not autoscale.
 - **LTS minor upgrades** (rare, once per LTS cycle): the same procedure, rehearsed in dev and acc first. Alternative
   for risky jumps: add new node pools on the new version, cordon and drain the old pools AZ by AZ, delete them.
 
@@ -756,7 +798,8 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
   **Azure Virtual Network encryption**, enabled on every stateless spoke VNet (and the hub peering).
   - Requires node VM sizes that support VNet encryption (accelerated networking); because the only enforcement mode is
     `AllowUnencrypted`, an unsupported VM size would silently send clear text. The allowed VM sizes are therefore
-    enforced with Azure Policy on the node pools, and VNet encryption on the VNets.
+    enforced with Azure Policy – on the system pool's VM size and on the SKU requirements of the NAP `NodePool`s – and
+    VNet encryption on the VNets.
   - VNet encryption covers VM-to-VM traffic in the VNet and peered VNets. Everything that leaves the stateless cluster
     (to Azure Firewall, the stateful cluster, PaaS, Internet) is TLS anyway – see below.
 - **Gateway API only, no Ingress.** HTTP traffic into a cell is configured exclusively with the Kubernetes
@@ -765,7 +808,7 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
   `kubernetesGateway` provider enabled (the `kubernetesIngress` and `kubernetesCRD`/`IngressRoute` providers are off and
   their CRDs are not installed), and Azure Policy rejects `Ingress` objects.
 - **Traefik is the Gateway API implementation**, one instance per isolation zone in the platform namespace
-  `<zone>-gateway` (a reserved application name) on the zone's node pool, behind an internal load balancer in
+  `<zone>-gateway` (a reserved application name) on the zone's nodes, behind an internal load balancer in
   `snet-<zone>-ilb`. The platform owns the `GatewayClass` and one `Gateway` per zone; application teams own only
   `HTTPRoute`s in their namespaces – the Gateway API role split between cluster operator and application developer. `allowedRoutes` selects namespaces with `platform/zone=<zone>`, so a route
   can never attach to another zone's gateway.
@@ -903,6 +946,7 @@ Limits of the add-on and how the design handles them:
 | Requests set, probes set, no privileged / hostNetwork / hostPath for applications | ✔ | | |
 | Replica and rollout guardrails (PDB existence: CI check) of [section 11](#11-zero-downtime-application-upgrades) | ✔ | ≥ 2 replicas | ≥ 3 replicas, zone spread |
 | Reject `PersistentVolumeClaim` | | ✔ | |
+| NAP `NodePool` / `AKSNodeClass`: subnet, `platform/zone` label, taint and AZ of its zone; only allowed VNet-encryption-capable VM sizes | | ✔ | |
 | Reject `Ingress`; only HTTPS `Gateway` listeners; `HTTPRoute` only to the zone's HTTPS listener and zone domain | | ✔ | |
 | Reject `LoadBalancer` / `NodePort` Services outside `<zone>-gateway` | | ✔ | |
 | Reject `Ingress`, `Gateway`, `HTTPRoute`; `LoadBalancer` only internal, in the zone's ILB subnet, `externalTrafficPolicy: Local`; no `NodePort` | | | ✔ |
@@ -925,6 +969,9 @@ Limits of the add-on and how the design handles them:
 - Internal entry point: is F5 NGINXaaS (an Azure partner service) acceptable, and is NGINX App Protect WAF generally
   available for it in our region? Alternatives: self-managed NGINX/Envoy with consistent hashing on VM scale sets, or
   Application Gateway with cookie affinity, accepting that cookie-less internal clients see both versions.
+- Node auto provisioning in the stateless clusters: confirm that NAP with custom subnets per `NodePool` is supported
+  (and generally available) in our region together with a private cluster, API Server VNet Integration, outbound type
+  `userDefinedRouting` and the Azure Policy add-on. Fallback: classic node pools per zone with the cluster autoscaler.
 - Key Vault ABAC is preview – acceptable for production, or fall back to vault per application until GA? (Affects only
   applications with a secret exception.)
 - Which application stacks lack Entra ID support in their drivers/SDKs, and are they upgraded or given a secret

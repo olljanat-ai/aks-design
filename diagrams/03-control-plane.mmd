@@ -17,7 +17,7 @@ flowchart LR
             sys["System node pool<br/>(CriticalAddonsOnly taint)"]
         end
         subgraph WL["Workload zones (int-fi, int-se, ext-fi, ext-se)"]
-            nodes["Zone node pools<br/>kubelet"]
+            nodes["Zone nodes<br/>(NAP NodePools / node pools)<br/>kubelet"]
         end
     end
 

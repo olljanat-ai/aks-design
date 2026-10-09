@@ -26,13 +26,13 @@ flowchart TB
         end
         subgraph INT["Internal workloads"]
             direction TB
-            intfi["int-fi<br/>subnets · node pool · Key Vault"]
-            intse["int-se<br/>subnets · node pool · Key Vault"]
+            intfi["int-fi<br/>subnets · nodes · Key Vault"]
+            intse["int-se<br/>subnets · nodes · Key Vault"]
         end
         subgraph EXT["External workloads"]
             direction TB
-            extfi["ext-fi<br/>subnets · node pool · Key Vault<br/>Traefik ILB + Private Link Service"]
-            extse["ext-se<br/>subnets · node pool · Key Vault<br/>Traefik ILB + Private Link Service"]
+            extfi["ext-fi<br/>subnets · nodes · Key Vault<br/>Traefik ILB + Private Link Service"]
+            extse["ext-se<br/>subnets · nodes · Key Vault<br/>Traefik ILB + Private Link Service"]
         end
     end
 

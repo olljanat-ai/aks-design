@@ -12,9 +12,9 @@ flowchart TB
 
     subgraph FRONT["Frontend network – stateless clusters, one per availability zone"]
         direction LR
-        sl1["<b>aks-&lt;env&gt;-sl-az1</b><br/>vnet-&lt;env&gt;-sl-az1 (VNet encryption)<br/>all node pools in AZ 1<br/>zones int-fi, int-se, ext-fi, ext-se<br/>Azure CNI Overlay · Traefik Gateway API (HTTPS only)<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
-        sl2["<b>aks-&lt;env&gt;-sl-az2</b><br/>vnet-&lt;env&gt;-sl-az2 (VNet encryption)<br/>all node pools in AZ 2<br/>identical apps and config<br/>≥ 2 replicas per app · HPA / KEDA<br/>cluster autoscaler"]
-        sl3["<b>aks-&lt;env&gt;-sl-az3</b> (optional)<br/>vnet-&lt;env&gt;-sl-az3<br/>all node pools in AZ 3"]
+        sl1["<b>aks-&lt;env&gt;-sl-az1</b><br/>vnet-&lt;env&gt;-sl-az1 (VNet encryption)<br/>all nodes in AZ 1<br/>zones int-fi, int-se, ext-fi, ext-se<br/>Azure CNI Overlay · Traefik Gateway API (HTTPS only)<br/>≥ 2 replicas per app · HPA / KEDA<br/>node auto provisioning (NAP)"]
+        sl2["<b>aks-&lt;env&gt;-sl-az2</b><br/>vnet-&lt;env&gt;-sl-az2 (VNet encryption)<br/>all nodes in AZ 2<br/>identical apps and config<br/>≥ 2 replicas per app · HPA / KEDA<br/>node auto provisioning (NAP)"]
+        sl3["<b>aks-&lt;env&gt;-sl-az3</b> (optional)<br/>vnet-&lt;env&gt;-sl-az3<br/>all nodes in AZ 3"]
         sl1 ~~~ sl2 ~~~ sl3
     end
 
@@ -22,7 +22,7 @@ flowchart TB
 
     subgraph BACK["Backend network – no Internet route in either direction"]
         direction LR
-        sf["<b>aks-&lt;env&gt;-sf</b> (optional, last option –<br/>built with the first approved exception)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>node pools spread over AZ 1, 2, 3<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none<br/>Azure CNI (VNet) · no Gateway API, no Ingress<br/>internal LB Services · TLS by the application"]
+        sf["<b>aks-&lt;env&gt;-sf</b> (optional, last option –<br/>built with the first approved exception)<br/>vnet-&lt;env&gt;-sf<br/>AKS LTS · Premium tier<br/>fixed-size node pools in AZ 1, 2, 3 (no autoscaling)<br/>zones int-fi, int-se, ext-fi, ext-se<br/>network isolated: outbound type none<br/>Azure CNI (VNet) · no Gateway API, no Ingress<br/>internal LB Services · TLS by the application"]
         subgraph PAAS["Azure PaaS – first choice for data, private endpoints only"]
             direction TB
             db["Azure SQL / PostgreSQL<br/>(zone-redundant)"]
