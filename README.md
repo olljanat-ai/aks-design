@@ -30,8 +30,8 @@ encrypted.
 | R8 | Two cluster types: stateless and stateful | Stateless clusters in the frontend network, one optional stateful cluster in the backend network, built only when a workload requires it ([picture 8](#8-cluster-types-stateless-and-stateful)) |
 | R8a | Stateful cluster is the last option | Placement order stateless cluster → Azure PaaS → stateful cluster; the stateful cluster needs a documented exception ([where does a workload run](#where-does-a-workload-run)) |
 | R9 | Stateful cluster exists at most once, in the backend network with the Azure PaaS services, no Internet connectivity at all | Backend spoke with PaaS private endpoints; network isolated AKS (outbound type `none`), no public IPs, Firewall deny-all for backend prefixes |
-| R9a | Stateful cluster: VNet-integrated CNI, no ingress controller / Gateway API, applications handle TLS | Azure CNI (VNet, dynamic pod IP allocation) powered by Cilium; applications are published with internal `LoadBalancer` Services and terminate TLS themselves ([section 13](#13-encryption-in-transit-and-tls)) |
-| R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names, distributed through Key Vault, and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
+| R9a | Stateful cluster: VNet-integrated CNI, no Gateway API implementation (and no Ingress), applications handle TLS | Azure CNI (VNet, dynamic pod IP allocation) powered by Cilium; applications are published with internal `LoadBalancer` Services and terminate TLS themselves ([section 13](#13-encryption-in-transit-and-tls)) |
+| R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API (no Kubernetes Ingress) | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names, distributed through Key Vault, and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
 | R10 | Stateful cluster spread over availability zones and running AKS LTS | Node pools per AZ 1/2/3, ZRS storage, Premium tier with Long Term Support |
 | R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, cluster autoscaler |
 | R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, releases one cell at a time with cell affinity, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
@@ -69,7 +69,7 @@ The design uses two isolation patterns at two levels, and this document uses the
 | Term | In this design | Pattern | Limits the impact of |
 |---|---|---|---|
 | **Cell** | One stateless cluster (`aks-<env>-sl-az<N>`) with its own VNet, all of it in one availability zone, running a full copy of every application of every isolation zone | [Cell-based architecture](https://docs.aws.amazon.com/solutions/cell-based-architecture-for-amazon-eks/) | An availability zone outage, a cluster failure, a bad release or a bad cluster upgrade: changes reach one cell at a time |
-| **Cell router** | The traffic layer: Front Door for external zones, NGINXaaS for internal zones; maps each client IP to a cell ([ingress](#ingress-traffic-from-outside-and-from-inside)) | Cell-based architecture | – (zone-redundant, outside the cells) |
+| **Cell router** | The traffic layer: Front Door for external zones, NGINXaaS for internal zones; maps each client IP to a cell ([incoming traffic](#incoming-traffic-from-outside-and-from-inside)) | Cell-based architecture | – (zone-redundant, outside the cells) |
 | **Isolation zone** | One exposure × country (`int-fi`, `ext-se`, …) with its own address space, subnets, node pool, Key Vault and policies, present in every cell | [Bulkhead](https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead) | A noisy, failing or compromised workload of one zone: it cannot use another zone's nodes, network or secrets |
 | **Shared tier** | Hub (Firewall, gateways, DNS), Azure PaaS, ACR, Key Vaults, the optional stateful cluster | – | Not split into cells; zone-redundant instead, and changed with extra care |
 
@@ -77,7 +77,7 @@ Two differences from the classic cell-based architecture:
 
 - **Every cell serves every user.** The cells are full replicas, aligned with availability zones (as in the AWS
   guidance for EKS, one cluster per availability zone); users are not partitioned between cells by tenant or
-  customer. The cell router only pins a user's *session* to a cell ([cell affinity](#ingress-traffic-from-outside-and-from-inside)).
+  customer. The cell router only pins a user's *session* to a cell ([cell affinity](#incoming-traffic-from-outside-and-from-inside)).
   Partitioning by country would be possible later, because the isolation zones already are the natural partition key.
 - **The data is shared.** All cells use the same PaaS services and stateful cluster, so a cell isolates compute and
   releases, not data. Data changes therefore follow the [compatibility rule](#11-zero-downtime-application-upgrades).
@@ -243,7 +243,7 @@ cluster spoke. Inside a zone's vault, applications share the vault but are separ
   `@Request[...secrets:name]` for `setSecret`; rotation is owned by the application team (expiry dates set, Event
   Grid `SecretNearExpiry` alerts).
 - Secrets are mounted as **files** with the Secrets Store CSI driver; syncing them into Kubernetes `Secret` objects
-  (`secretObjects`) is rejected by policy (only the TLS certificate in `<zone>-ingress` is synced, for Traefik), as
+  (`secretObjects`) is rejected by policy (only the TLS certificate in `<zone>-gateway` is synced, for Traefik), as
   are hand-made `Opaque` Secrets in application namespaces
   ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)).
 
@@ -259,9 +259,9 @@ vault stays small and the preview dependency affects only the few exceptions.
 
 Each application gets its own namespace(s) inside a zone, with a baseline policy set applied automatically:
 
-1. default deny ingress and egress;
+1. default deny for inbound and outbound traffic;
 2. allow DNS to CoreDNS in `kube-system`;
-3. allow ingress only from the zone's Traefik gateway namespace (stateless clusters) or, in the stateful cluster,
+3. allow inbound traffic only from the zone's Traefik gateway namespace (stateless clusters) or, in the stateful cluster,
    only from the node subnets of the same zone in the stateless clusters (Cilium CIDR policy; the applications'
    `LoadBalancer` Services use `externalTrafficPolicy: Local` so the client IP is preserved);
 4. allow traffic within the namespace;
@@ -309,9 +309,9 @@ stateful cluster runs, the smaller its blast radius and upgrade risk.
 | Count per environment | One per availability zone: `sl-az1`, `sl-az2` mandatory, `sl-az3` optional (recommended for prd) | Zero or one – built only when the first approved workload needs it |
 | Availability zones | All node pools of a cluster pinned to its AZ (`--zones <N>`); the cluster is the unit of failure | Every isolation zone has one node pool per AZ (`intfiz1`, `intfiz2`, `intfiz3`, …); system pool spread over AZ 1–3 |
 | Network | Frontend spoke `vnet-<env>-sl-az<N>`, peered to the hub | Backend spoke `vnet-<env>-sf`, peered to the hub, together with the PaaS private endpoints |
-| Internet | Egress only via Azure Firewall FQDN allow-list (outbound type `userDefinedRouting`); ingress only via the traffic layer | **None.** [Network isolated cluster](https://learn.microsoft.com/en-us/azure/aks/concepts-network-isolated) (outbound type `none`, bootstrap artifacts from the private ACR cache), no public IPs, UDR `0.0.0.0/0` → Firewall which denies all Internet for backend prefixes |
+| Internet | Egress only via Azure Firewall FQDN allow-list (outbound type `userDefinedRouting`); inbound only via the traffic layer | **None.** [Network isolated cluster](https://learn.microsoft.com/en-us/azure/aks/concepts-network-isolated) (outbound type `none`, bootstrap artifacts from the private ACR cache), no public IPs, UDR `0.0.0.0/0` → Firewall which denies all Internet for backend prefixes |
 | CNI | [Azure CNI Overlay](https://learn.microsoft.com/en-us/azure/aks/concepts-network-azure-cni-overlay) powered by Cilium | Azure CNI (VNet-integrated, dynamic pod IP allocation) powered by Cilium |
-| Ingress | Traefik as [Gateway API](https://gateway-api.sigs.k8s.io/) implementation, one gateway per isolation zone, HTTPS only | **No ingress controller and no Gateway API.** Applications are published with internal `LoadBalancer` Services (L4) |
+| Incoming HTTP(S) | [Gateway API](https://gateway-api.sigs.k8s.io/) with Traefik as the implementation, one `Gateway` per isolation zone, HTTPS only; the Kubernetes Ingress API is not used | **No Gateway API implementation and no Ingress.** Applications are published with internal `LoadBalancer` Services (L4) |
 | TLS | Terminated by Traefik with Let's Encrypt certificates for internal DNS names; applications serve plain HTTP inside the cluster | **Terminated by the application itself** – a hard onboarding requirement |
 | Node-to-node encryption | [Azure Virtual Network encryption](https://learn.microsoft.com/en-us/azure/virtual-network/virtual-network-encryption-overview) – no service mesh, no mTLS | Application TLS (VNet encryption may be enabled as defence in depth but is not relied on) |
 | Kubernetes version | Standard support, latest GA minus one | [Long Term Support](https://learn.microsoft.com/en-us/azure/aks/long-term-support) (`--tier premium --k8s-support-plan AKSLongTermSupport`) |
@@ -322,11 +322,11 @@ stateful cluster runs, the smaller its blast radius and upgrade risk.
 
 **Isolation zones are kept in both cluster types.** Each stateless and the stateful cluster have the node pools,
 subnets, Key Vaults and policies of zones `int-fi`, `int-se`, `ext-fi`, `ext-se` exactly as in pictures 2–7 – the data
-in the stateful cluster is what needs the country separation most. The stateful cluster has no ingress at all: each
+in the stateful cluster is what needs the country separation most. The stateful cluster has no Gateway API (and no Ingress) at all: each
 zone's applications are reachable only on their own internal load balancer IPs, and only from the same zone of the
 stateless clusters.
 
-### Ingress traffic: from outside and from inside
+### Incoming traffic: from outside and from inside
 
 All requests to applications enter through a **traffic layer** (the cell router) that lives outside the cells, so it
 survives every cluster upgrade or rebuild. It has one entry point per isolation zone, and every entry point has the
@@ -394,7 +394,7 @@ The NGINXaaS deployments live in a separate **edge VNet** per environment (`vnet
 internal zone's deployment is in its own delegated subnet inside the zone's address space
 ([address plan](#vnets-and-address-plan)), so the Firewall rule "edge `int-fi` → cells `int-fi`" is again expressed
 with zone prefixes, and a UDR sends the cell prefixes → Firewall. External zones need no subnet there, because Front
-Door is a global service that reaches the cells through Private Link: the Traefik `Service` in `<zone>-ingress`
+Door is a global service that reaches the cells through Private Link: the Traefik `Service` in `<zone>-gateway`
 creates the Private Link Service itself (`service.beta.kubernetes.io/azure-pls-create: "true"`), and the NSG of
 `snet-ext-<country>-ilb` allows TCP 443 only from the Private Link Service's NAT IPs. This traffic does not pass the hub
 Firewall; the Front Door WAF and Traefik are its controls.
@@ -438,7 +438,7 @@ Layout of one zone, prd `int-fi` `10.49.0.0/17` (`ext-fi` is the same from `10.4
 | `10.49.0.0/20` | `int-fi` in `sl-az1` | `vnet-prd-sl-az1` |
 | `10.49.16.0/20` | `int-fi` in `sl-az2` | `vnet-prd-sl-az2` |
 | `10.49.32.0/20` | `int-fi` in `sl-az3` (optional) | `vnet-prd-sl-az3` |
-| `10.49.48.0/20` | `int-fi` internal entry point, NGINXaaS ([ingress](#ingress-traffic-from-outside-and-from-inside)); unused in external zones | `vnet-prd-edge` |
+| `10.49.48.0/20` | `int-fi` internal entry point, NGINXaaS ([incoming traffic](#incoming-traffic-from-outside-and-from-inside)); unused in external zones | `vnet-prd-edge` |
 | `10.49.64.0/20` | `int-fi` in the stateful cluster | `vnet-prd-sf` |
 | `10.49.80.0/20` – `10.49.112.0/20` | Reserve: more pod IPs for the stateful cluster (added as another address space) | `vnet-prd-sf` |
 
@@ -564,7 +564,7 @@ fleet/
 ├── infrastructure/
 │   ├── base/                      # Cilium policies, Secrets Store CSI settings, monitoring
 │   ├── stateless/                 # Traefik + Gateways + certificate SecretProviderClass per zone, HPA/KEDA
-│   └── stateful/                  # storage classes (ZRS), operators (no ingress) – applied by the pipeline
+│   └── stateful/                  # storage classes (ZRS), operators (no Gateway API) – applied by the pipeline
 └── apps/
     └── <app>/
         ├── base/
@@ -644,7 +644,7 @@ application can be deployed in a way that breaks a zero-downtime rollout or a no
 | PodDisruptionBudget | Mandatory, `maxUnavailable: 1` (or ≤ 50 %) | Mandatory, `maxUnavailable: 1` |
 | Rollout strategy | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 25%` | `RollingUpdate` (optionally `partition` for canary) or operator-managed |
 | Probes | readiness + liveness (+ startup) required | readiness gated on replication / quorum |
-| Graceful shutdown | `preStop` delay + `terminationGracePeriodSeconds` longer than the ingress drain time | same, plus clean leader hand-over |
+| Graceful shutdown | `preStop` delay + `terminationGracePeriodSeconds` longer than the gateway / traffic layer drain time | same, plus clean leader hand-over |
 | Resources | requests required (HPA and autoscaler depend on them) | requests = limits for memory |
 | Images | by digest, from the environment's ACR only | same |
 
@@ -716,7 +716,7 @@ two never run in the same cell at the same time:
 3. upgrade control plane and node pools – or, for large changes (new VNet, CNI, OS SKU), **create a fresh cluster**
    from IaC and let Flux bootstrap it (blue/green at cluster level);
 4. wait until all Flux Kustomizations are `Ready`, run smoke and synthetic tests through the cell's per-cell test
-   host names ([ingress](#ingress-traffic-from-outside-and-from-inside));
+   host names ([incoming traffic](#incoming-traffic-from-outside-and-from-inside));
 5. return the cell's clients while watching error-rate and latency SLOs – on Front Door in steps of IP blocks, on
    NGINXaaS in one step; on breach take the cell out again and stop;
 6. repeat for the next cell.
@@ -759,9 +759,15 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
     enforced with Azure Policy on the node pools, and VNet encryption on the VNets.
   - VNet encryption covers VM-to-VM traffic in the VNet and peered VNets. Everything that leaves the stateless cluster
     (to Azure Firewall, the stateful cluster, PaaS, Internet) is TLS anyway – see below.
-- **Traefik is the Gateway API implementation**, one instance per isolation zone in `<zone>-ingress` on the zone's node
-  pool, behind an internal load balancer in `snet-<zone>-ilb`. Platform-owned `Gateway` per zone; application teams
-  own only `HTTPRoute`s in their namespaces. `allowedRoutes` selects namespaces with `platform/zone=<zone>`, so a route
+- **Gateway API only, no Ingress.** HTTP traffic into a cell is configured exclusively with the Kubernetes
+  [Gateway API](https://gateway-api.sigs.k8s.io/) (`GatewayClass`, `Gateway`, `HTTPRoute`; `GRPCRoute` where needed),
+  standard channel only. The Kubernetes Ingress API is not used anywhere: Traefik runs with only its
+  `kubernetesGateway` provider enabled (the `kubernetesIngress` and `kubernetesCRD`/`IngressRoute` providers are off and
+  their CRDs are not installed), and Azure Policy rejects `Ingress` objects.
+- **Traefik is the Gateway API implementation**, one instance per isolation zone in the platform namespace
+  `<zone>-gateway` (a reserved application name) on the zone's node pool, behind an internal load balancer in
+  `snet-<zone>-ilb`. The platform owns the `GatewayClass` and one `Gateway` per zone; application teams own only
+  `HTTPRoute`s in their namespaces – the Gateway API role split between cluster operator and application developer. `allowedRoutes` selects namespaces with `platform/zone=<zone>`, so a route
   can never attach to another zone's gateway.
 - **Internal DNS names with Let's Encrypt certificates.** Each zone has its own DNS name space, e.g.
   `*.ext-fi.prd.example.com`, resolved only by the Private DNS zone in the hub (split horizon: the name has no
@@ -773,12 +779,12 @@ Every hop is encrypted, but each cluster type does it in the way that costs the 
   HTTP→HTTPS redirect listener either), the internal load balancer has only port 443, and the NSG on `snet-<zone>-ilb`
   allows only TCP 443. Azure Policy rejects `Gateway` listeners with protocol `HTTP`, `HTTPRoute`s that do not attach to
   the HTTPS listener, hostnames outside the zone's domain, `Ingress` objects, and `LoadBalancer` / `NodePort` Services
-  outside `<zone>-ingress`. Traefik adds HSTS to every response. The traffic layer listens on HTTPS only and
+  outside `<zone>-gateway`. Traefik adds HSTS to every response. The traffic layer listens on HTTPS only and
   re-encrypts to Traefik (end-to-end TLS).
 
 ### Stateful cluster: the application terminates TLS
 
-- **No ingress controller and no Gateway API** – the CRDs are not installed and Azure Policy rejects `Ingress`,
+- **No Gateway API implementation and no Ingress** – the CRDs are not installed and Azure Policy rejects `Ingress`,
   `Gateway` and `HTTPRoute` objects. Fewer moving parts in the cluster that is hardest to upgrade.
 - **Azure CNI (VNet-integrated)**: pod IPs are routable in the backend spoke, so NSGs, the Firewall and Cilium
   policies see real addresses.
@@ -838,7 +844,7 @@ Internet access to Let's Encrypt or write access to DNS.
   before it can be assigned – the module creates it with a short-lived self-signed placeholder (issuer `Self`) that
   the job replaces on its first run.
 - **Delivery and rotation** with the Secrets Store CSI driver (rotation enabled, 2-minute poll):
-  - Traefik: a `SecretProviderClass` in `<zone>-ingress` syncs the certificate into a `kubernetes.io/tls` Secret, which
+  - Traefik: a `SecretProviderClass` in `<zone>-gateway` syncs the certificate into a `kubernetes.io/tls` Secret, which
     the zone's `Gateway` listener references; Traefik reloads it when the Secret changes.
   - Applications: the certificate and key are mounted as PEM files and the application reloads them on change.
 - Things to be aware of:
@@ -875,7 +881,7 @@ No Gatekeeper is installed by Flux.
   in dev, then `deny`, then promoted to acc and prd with the rest of the platform change.
 - **Platform namespaces**: `kube-system` and `gatekeeper-system` are excluded by the add-on; `flux-system` and other
   platform namespaces are excluded from application rules through the definitions' namespace exclusion parameters.
-  `<zone>-ingress` is excluded only from the rules that Traefik itself must break (its `LoadBalancer` Service, the
+  `<zone>-gateway` is excluded only from the rules that Traefik itself must break (its `LoadBalancer` Service, the
   synced TLS Secret) – zone pinning still applies to it.
 
 Limits of the add-on and how the design handles them:
@@ -893,12 +899,12 @@ Limits of the add-on and how the design handles them:
 | Namespace `<zone>-*` has label `platform/zone=<zone>`; pod nodeSelector / toleration match the prefix (mutation + validation) | ✔ | | |
 | Images by digest from the environment's ACR only | ✔ | | |
 | ServiceAccount used by application pods carries the workload identity client ID; no `imagePullSecrets` | ✔ | | |
-| No `Opaque` / basic-auth / docker-config `Secret`s in application namespaces (Helm release secrets allowed); `secretObjects` in `SecretProviderClass` only for the `kubernetes.io/tls` certificate in `<zone>-ingress` | ✔ | | |
+| No `Opaque` / basic-auth / docker-config `Secret`s in application namespaces (Helm release secrets allowed); `secretObjects` in `SecretProviderClass` only for the `kubernetes.io/tls` certificate in `<zone>-gateway` | ✔ | | |
 | Requests set, probes set, no privileged / hostNetwork / hostPath for applications | ✔ | | |
 | Replica and rollout guardrails (PDB existence: CI check) of [section 11](#11-zero-downtime-application-upgrades) | ✔ | ≥ 2 replicas | ≥ 3 replicas, zone spread |
 | Reject `PersistentVolumeClaim` | | ✔ | |
 | Reject `Ingress`; only HTTPS `Gateway` listeners; `HTTPRoute` only to the zone's HTTPS listener and zone domain | | ✔ | |
-| Reject `LoadBalancer` / `NodePort` Services outside `<zone>-ingress` | | ✔ | |
+| Reject `LoadBalancer` / `NodePort` Services outside `<zone>-gateway` | | ✔ | |
 | Reject `Ingress`, `Gateway`, `HTTPRoute`; `LoadBalancer` only internal, in the zone's ILB subnet, `externalTrafficPolicy: Local`; no `NodePort` | | | ✔ |
 | Namespace has `platform/stateful-exception` | | | ✔ |
 
