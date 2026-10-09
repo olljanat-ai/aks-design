@@ -4,10 +4,10 @@ flowchart TB
     internet(("Internet"))
     corp["Corporate network<br/>(via hub Firewall)"]
 
-    subgraph EDGE["Traffic layer – one entry point per zone, active-active, per request, no session affinity"]
+    subgraph EDGE["Traffic layer = cell router – one entry point per zone, active-active, client-IP affinity"]
         direction LR
-        waf["Azure Front Door Premium + WAF<br/>external zones<br/>weighted origins via Private Link"]
-        agw_in["Internal Application Gateway WAF v2<br/>internal zones · vnet-&lt;env&gt;-edge<br/>round robin backend pool"]
+        waf["Azure Front Door Premium + WAF<br/>external zones<br/>client IP blocks → cell (rule set)<br/>origins via Private Link"]
+        agw_in["F5 NGINXaaS + App Protect WAF<br/>internal zones · vnet-&lt;env&gt;-edge<br/>consistent hash on client IP"]
     end
 
     subgraph FRONT["Frontend network – stateless clusters, one per availability zone"]
@@ -36,7 +36,7 @@ flowchart TB
 
     internet ==>|"HTTPS"| waf
     corp ==> agw_in
-    EDGE ==>|"HTTPS · backends = Traefik ILB of the zone in every stateless cluster<br/>client TLS ends at the edge · probe failure or drain removes a cluster"| FRONT
+    EDGE ==>|"HTTPS · backends = Traefik ILB of the zone in every stateless cluster<br/>client TLS ends at the edge · each client IP → one cell<br/>probe failure or drain moves that cell's clients"| FRONT
     FRONT -->|"egress + east-west"| fw
     fw -->|"TLS only: PaaS private endpoints (preferred),<br/>stateful app internal LBs"| BACK
     sf --> PAAS
