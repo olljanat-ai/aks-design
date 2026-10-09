@@ -15,5 +15,5 @@ sequenceDiagram
     P->>A: Smoke + synthetic tests through the per-cell test host names
     P->>T: Return az1 – its clients come back and get the new version
     Note over P: Watch error rate / latency SLO. Breach → take az1 out again, stop (release: revert tag).
-    P->>A: Soak, pre-scale az1, then repeat steps 2–7 for az2 (and az3): its clients reach the new version once
+    P->>A: Release: soak, pre-scale az1, repeat steps 2–7 for az2 (and az3)<br/>Cluster update: az2 (and az3) follow later on the slow speed
     P->>B: Remove pre-scale, HPA / KEDA and NAP consolidation take over

@@ -10,7 +10,7 @@ with **CI/CD pipelines** – with fully automated zero-downtime upgrades of appl
 Data belongs in **Azure PaaS services**; the stateful cluster is the *last option*, used only when no suitable PaaS
 service exists or a special use case requires it, and it is **not built at all until the first such workload is
 approved**. All admission policies are implemented with the AKS-native **Azure Policy add-on** (Gatekeeper managed by AKS).
-Pictures 1–7 describe what is *inside* one cluster; pictures 8–13 describe the fleet of clusters and how traffic is
+Pictures 1–7 describe what is *inside* one cluster; pictures 8–14 describe the fleet of clusters and how traffic is
 encrypted.
 
 > Status: **draft** for review. Country codes `fi` / `se` and all IP ranges are examples.
@@ -35,6 +35,7 @@ encrypted.
 | R10 | Stateful cluster spread over availability zones and running AKS LTS | Fixed-size node pools per AZ 1/2/3 (no autoscaling), ZRS storage, Premium tier with Long Term Support |
 | R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, [node auto provisioning](https://learn.microsoft.com/en-us/azure/aks/node-autoprovision) (NAP) |
 | R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, releases one cell at a time with cell affinity, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
+| R12a | Update policy: stateful cluster only when absolutely necessary, stateless clusters at two speeds | Stateful: oldest LTS minor kept until 6 months before its end of LTS support, existing nodes patched instead of replaced where possible. Stateless: `sl-az1` on the second latest minor with patches after 1 week per environment, `sl-az2` one minor behind with 1 month per environment ([update policy](#update-policy)) |
 | R13 | dev, acc and prd environments kept in sync | 3 × 2 = 6 clusters (3 × 3 = 9 with the stateful cluster) from the same IaC modules, all in-cluster state from one Git repository: FluxCD in the stateless clusters, CI/CD pipeline in the stateful cluster ([picture 9](#9-environments-six-to-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
 | R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
 | R15 | Certificates distributed through Key Vault, shared by all clusters | One shared **platform Key Vault per environment** (`kv-<env>-platform`) holds all certificates of that environment; a renewal job per environment issues one certificate per zone into it, and all clusters of the environment read it with plain Azure RBAC scoped to the individual certificate ([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
@@ -349,7 +350,7 @@ stateful cluster runs, the smaller its blast radius and upgrade risk.
 | Incoming HTTP(S) | [Gateway API](https://gateway-api.sigs.k8s.io/) with Traefik as the implementation, one `Gateway` per isolation zone, HTTPS only; the Kubernetes Ingress API is not used | **No Gateway API implementation and no Ingress.** Applications are published with internal `LoadBalancer` Services (L4) |
 | TLS | Terminated by Traefik with Let's Encrypt certificates for internal DNS names; applications serve plain HTTP inside the cluster | **Terminated by the application itself** – a hard onboarding requirement |
 | Node-to-node encryption | [Azure Virtual Network encryption](https://learn.microsoft.com/en-us/azure/virtual-network/virtual-network-encryption-overview) – no service mesh, no mTLS | Application TLS (VNet encryption may be enabled as defence in depth but is not relied on) |
-| Kubernetes version | Standard support, latest GA minus one | [Long Term Support](https://learn.microsoft.com/en-us/azure/aks/long-term-support) (`--tier premium --k8s-support-plan AKSLongTermSupport`) |
+| Kubernetes version | Standard support, two speeds: `sl-az1` on the second latest GA minor (N-1), `sl-az2` (and `sl-az3`) one minor behind (N-2) ([update policy](#update-policy)) | [Long Term Support](https://learn.microsoft.com/en-us/azure/aks/long-term-support) (`--tier premium --k8s-support-plan AKSLongTermSupport`), kept on the same minor until 6 months before its LTS ends |
 | Tier | Standard | Premium (required for LTS) |
 | Scaling | ≥ 2 replicas per app, HPA / KEDA on load, NAP adds and removes nodes; **each cluster sized to carry 100 % of the load alone** (NAP `NodePool` limits) | ≥ 3 replicas per StatefulSet, one per AZ; **no autoscaling** – fixed node count per pool, sized when an exception is onboarded and changed as a planned IaC change |
 | Storage | None – admission policy rejects PersistentVolumeClaims; ephemeral OS disks | Azure Disk `Premium_ZRS` / `StandardSSD_ZRS`, Azure Files ZRS; prefer PaaS for databases |
@@ -578,6 +579,9 @@ smaller stateful node pools.
   credentials and – in stateless clusters – the Flux bootstrap. The IaC also writes a
   `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`, the zones' node subnet IDs) that Flux uses for substitutions (the
   stateful pipeline sets the same variables itself).
+- **Versions are the one intended difference.** Environments and cells run the same configuration but not always the
+  same Kubernetes version or node image: patches move through dev → acc → prd with a delay, and `sl-az1` and `sl-az2`
+  run different minors by design ([update policy](#update-policy)).
 - **Everything inside a cluster comes from Git** – via Flux in the stateless clusters and via the deployment pipeline
   in the stateful cluster; no manual `kubectl apply`. Human access in acc and prd is read-only Kubernetes RBAC plus
   break-glass via PIM.
@@ -620,7 +624,8 @@ better, and the Internet-less cluster runs one component less.
   repository ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)); CI still tests the rendered fleet
   manifests against the same constraint templates.
 - **Artifact = OCI artifact in the environment's ACR.** On merge to `main`, CI validates (`kustomize build`,
-  kubeconform, policy tests), runs `flux push artifact oci://<acr>.azurecr.io/fleet:<git-sha>`, signs it with cosign
+  kubeconform against every Kubernetes minor that runs in the fleet – both stateless speeds and the stateful LTS
+  version, see [update policy](#update-policy) – and policy tests), runs `flux push artifact oci://<acr>.azurecr.io/fleet:<git-sha>`, signs it with cosign
   and tags it. Signed, immutable and served from the ACR private endpoint, it is what both Flux and the stateful
   pipeline deploy.
 - **Promotion between environments** is a pull request that copies the tested image digests and configuration from
@@ -738,8 +743,65 @@ Consequences:
 
 ## 12. Zero-downtime cluster upgrades
 
-Cluster upgrades are triggered by pipelines (or Azure Kubernetes Fleet Manager update runs) in a fixed order:
-**dev → acc → prd**, each with a soak period, and within an environment as below. Nothing is upgraded by hand.
+Cluster upgrades are triggered by pipelines in a fixed order: **dev → acc → prd**, with the waiting times of the
+[update policy](#update-policy) below, and within an environment as described per cluster type. Nothing is upgraded by
+hand.
+
+### Update policy
+
+![Update policy](images/14-update-policy.svg)
+
+The two cluster types are updated at very different speeds, for the same reason they are built differently: a
+stateless cell can be drained and replaced at any time, the stateful cluster holds data and is changed as rarely as
+possible.
+
+| | Stateless, fast speed: `sl-az1` | Stateless, slow speed: `sl-az2` (and `sl-az3`) | Stateful: `sf` |
+|---|---|---|---|
+| Kubernetes minor | **N-1**: the second latest GA minor in AKS | **One minor behind `sl-az1`** (N-2) – always a minor that `sl-az1` has already run in prd | **LTS minor**, kept as long as it has Long Term Support |
+| Patches (Kubernetes patch versions, node images) | dev **1 week** after AKS releases them, acc 1 week after dev, prd 1 week after acc (prd ≈ 3 weeks after release) | dev **1 month** after release, acc 1 month after dev, prd 1 month after acc (prd ≈ 3 months after release) | **Only when absolutely necessary** (see below) |
+| Minor upgrades | When a new minor becomes GA, to the new N-1, with the same 1-week steps | To the minor `sl-az1` leaves, with the same 1-month steps | Within the **last 6 months of LTS support** of the current minor: dev first, then acc, then prd |
+| How nodes are updated | Cell drained, control plane + system pool upgraded, NAP replaces the zone nodes ([below](#stateless-clusters)) | Same | **Patched in place** where possible; nodes replaced only when a change requires it ([below](#stateful-cluster)) |
+| AKS auto-upgrade channels | `none` – the version pipeline decides | `none` | Cluster `none`; node OS channel for in-place patches ([below](#stateful-cluster)) |
+
+**Why two speeds in the stateless clusters.** At any moment one cell runs a version that is newer and less proven and
+the other cell(s) a version that `sl-az1` has already run in production – so a regression in a Kubernetes patch, a
+node image or a minor version reaches only the fast cell first, while the slow cell(s) keep serving
+([releases cell by cell](#releases-cell-by-cell) uses the same idea for applications). Removed or changed Kubernetes
+APIs show up in `sl-az1` (dev first) a full minor cycle before they reach `sl-az2`. Applications and fleet manifests
+must therefore work on both minors; CI validates the rendered manifests against both (and against the stateful LTS
+version).
+
+**How the stateless timetable is run.** A scheduled **version pipeline** reads the Kubernetes versions and node images
+AKS offers in the region and the date each was released, computes the target version and node image of every
+stateless cluster from the table above, and commits it to the IaC repository. The cluster upgrade pipeline then
+applies it cell by cell with the drain procedure below; dev and acc run without approval, prd needs an approval only
+for minor upgrades. Rules:
+
+- Every patch has its own timeline counted from its AKS release date; if a newer patch is already due, it replaces an
+  older one that has not been promoted yet (patches are not applied one by one).
+- A step is promoted only if the previous environment of the same speed is healthy on that version (no rollback, SLOs
+  met during the wait).
+- `sl-az2` runs the oldest minor in AKS standard support. Its minor upgrade is scheduled so that prd is upgraded
+  before that minor's end of support in the [AKS Kubernetes release calendar](https://learn.microsoft.com/en-us/azure/aks/supported-kubernetes-versions#aks-kubernetes-release-calendar);
+  if the calendar leaves less than 1 month per step, the steps are shortened.
+- **Emergency fast track**: a fix for an actively exploited vulnerability can skip the waiting times for both speeds
+  with the platform owner's approval – still dev → acc → prd and still one cell at a time.
+- `sl-az3` (prd only) follows the slow speed, so that two of three cells run the proven version.
+
+**Stateful cluster: only when absolutely necessary.** The stateful cluster is changed only for one of these reasons:
+
+1. **End of LTS support**: the upgrade to the next LTS minor starts no later than **6 months before** the current
+   minor's LTS ends – this window is used for dev, acc and prd with soak times between them. Until then the cluster
+   intentionally stays on its old minor.
+2. **Security**: a vulnerability that affects the cluster (node OS, kubelet, container runtime, Kubernetes) and
+   cannot be mitigated otherwise.
+3. **A bug** that affects the stateful workloads and is fixed in a newer patch.
+4. **Supportability**: AKS no longer supports the running patch version or node image.
+
+When a change is needed, the smallest one is chosen: an **in-place OS patch of the existing nodes** before a node image
+upgrade, a **control-plane-only** patch upgrade (`az aks upgrade --control-plane-only`; kubelets may lag behind the
+API server within the Kubernetes version skew policy) before replacing nodes, and node replacement only when the change
+cannot be made otherwise (e.g. a new Kubernetes minor).
 
 ### Stateless clusters
 
@@ -761,9 +823,10 @@ two never run in the same cell at the same time:
    NGINXaaS in one step; on breach take the cell out again and stop;
 6. repeat for the next cell.
 
-Node image / OS security updates use the same procedure or – because every app has ≥ 2 replicas and a PDB – the AKS
-node OS auto-upgrade channel in maintenance windows staggered per cluster (`sl-az1` and `sl-az2` never on the same day);
-NAP rolls new node images out to its nodes through drift within its disruption budgets.
+Node image / OS security updates follow the same timetable ([update policy](#update-policy)) and the same
+procedure: the new node image is set while the cell is drained, and NAP rolls it out to the zone nodes through drift
+within its disruption budgets. AKS auto-upgrade and node OS auto-upgrade channels are not used in the stateless clusters,
+so nothing changes a cell outside this procedure.
 Prerequisite for all of this is **N+1 capacity**: NAP `NodePool` limits, vCPU quota and node subnet size must allow one
 cluster to carry the whole environment.
 
@@ -773,16 +836,22 @@ cluster to carry the whole environment.
 
 There is only one stateful cluster, so it is upgraded **in place** and protected by zone redundancy:
 
-- **Version policy**: LTS minor version; auto-upgrade channel `patch` and node OS channel `NodeImage`, each inside a
-  planned maintenance window (`aksManagedAutoUpgradeSchedule`, `aksManagedNodeOSUpgradeSchedule`) staggered so that
-  dev is upgraded a week before acc and two weeks before prd.
+- **Version policy**: LTS minor version, changed only when absolutely necessary ([update policy](#update-policy)).
+  Cluster auto-upgrade channel `none`; Kubernetes patch versions are applied only for one of the listed reasons, by the
+  pipeline, dev → acc → prd, preferably control plane only.
+- **OS patches in place**: security patches are applied to the **existing nodes** instead of replacing them – node OS
+  channel `Unmanaged` (the OS's own unattended upgrades) with reboots coordinated one node at a time (kured), only inside
+  the planned maintenance window (`aksManagedNodeOSUpgradeSchedule`), dev a week before acc and two weeks before prd,
+  respecting the PDBs. A node is reimaged with a new node image only when an in-place patch is not possible or AKS
+  support requires it.
 - **Control plane**: zone-redundant (Premium tier); upgrading it does not restart workloads.
 - **Node pools**: one fixed-size pool per isolation zone *and* AZ, so a pool upgrade touches only one AZ. Surge settings
   `maxSurge: 1`, `maxUnavailable: 0`, a drain timeout and node soak time; drains respect the PDBs, so at most one
   replica of each StatefulSet is down at any moment. The surge node is created in the same AZ, so zonal disks
   re-attach; ZRS disks additionally allow a pod to move to another AZ. The vCPU quota must leave room for the surge nodes,
   because the pools do not autoscale.
-- **LTS minor upgrades** (rare, once per LTS cycle): the same procedure, rehearsed in dev and acc first. Alternative
+- **LTS minor upgrades** (rare, once per LTS cycle, within the last 6 months of LTS support): the same procedure,
+  rehearsed in dev and acc first. Alternative
   for risky jumps: add new node pools on the new version, cordon and drain the old pools AZ by AZ, delete them.
 
 ## 13. Encryption in transit and TLS
@@ -972,6 +1041,13 @@ Limits of the add-on and how the design handles them:
 - Node auto provisioning in the stateless clusters: confirm that NAP with custom subnets per `NodePool` is supported
   (and generally available) in our region together with a private cluster, API Server VNet Integration, outbound type
   `userDefinedRouting` and the Azure Policy add-on. Fallback: classic node pools per zone with the cluster autoscaler.
+- In-place OS patching of the stateful cluster (node OS channel `Unmanaged`) needs the OS package repositories, but
+  the cluster is network isolated: is a private package mirror in the backend network acceptable, and is the channel
+  supported for network isolated clusters? If not, the fallback is node OS channel `SecurityPatch` (security-only node
+  images, which replaces nodes) inside the maintenance window.
+- Update speeds: does `sl-az2` running the oldest supported minor leave enough time for its 1-month steps in every
+  AKS release cycle, and should `sl-az3` follow the slow speed (current draft) or the fast one? With NAP, confirm that
+  nodes created during scale-out use the pinned node image, not the newest one.
 - Key Vault ABAC is preview – acceptable for production, or fall back to vault per application until GA? (Affects only
   applications with a secret exception.)
 - Which application stacks lack Entra ID support in their drivers/SDKs, and are they upgraded or given a secret

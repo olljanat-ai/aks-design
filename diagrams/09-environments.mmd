@@ -5,23 +5,23 @@ flowchart TB
     src["Same source for every environment<br/>IaC modules (Bicep / Terraform): one per cluster type, env + AZ as parameters<br/>Fleet Git repository: Flux configuration of everything inside the clusters"]
 
     subgraph DEV["dev · subscription sub-aks-dev"]
-        d1["aks-dev-sl-az1<br/>stateless · AZ 1"]
-        d2["aks-dev-sl-az2<br/>stateless · AZ 2"]
+        d1["aks-dev-sl-az1<br/>stateless · AZ 1<br/>fast speed · minor N-1"]
+        d2["aks-dev-sl-az2<br/>stateless · AZ 2<br/>slow speed · minor N-2"]
         d3["aks-dev-sf<br/>optional – built with the first<br/>approved exception<br/>stateful · AZ 1-3 · LTS"]
         kd["kv-dev-platform<br/>platform Key Vault<br/>dev certificates (own renewal job)<br/>*.&lt;zone&gt;.dev.example.com"]
         d1 ~~~ d2 ~~~ d3 ~~~ kd
     end
     subgraph ACC["acc · subscription sub-aks-acc"]
-        a1["aks-acc-sl-az1<br/>stateless · AZ 1"]
-        a2["aks-acc-sl-az2<br/>stateless · AZ 2"]
+        a1["aks-acc-sl-az1<br/>stateless · AZ 1<br/>fast speed · minor N-1"]
+        a2["aks-acc-sl-az2<br/>stateless · AZ 2<br/>slow speed · minor N-2"]
         a3["aks-acc-sf<br/>optional – built with the first<br/>approved exception<br/>stateful · AZ 1-3 · LTS"]
         ka["kv-acc-platform<br/>platform Key Vault<br/>acc certificates (own renewal job)<br/>*.&lt;zone&gt;.acc.example.com"]
         a1 ~~~ a2 ~~~ a3 ~~~ ka
     end
     subgraph PRD["prd · subscription sub-aks-prd"]
-        p1["aks-prd-sl-az1<br/>stateless · AZ 1"]
-        p2["aks-prd-sl-az2<br/>stateless · AZ 2"]
-        p4["aks-prd-sl-az3<br/>optional 3rd AZ"]
+        p1["aks-prd-sl-az1<br/>stateless · AZ 1<br/>fast speed · minor N-1"]
+        p2["aks-prd-sl-az2<br/>stateless · AZ 2<br/>slow speed · minor N-2"]
+        p4["aks-prd-sl-az3<br/>optional 3rd AZ<br/>slow speed · minor N-2"]
         p3["aks-prd-sf<br/>optional – built with the first<br/>approved exception<br/>stateful · AZ 1-3 · LTS"]
         kp["kv-prd-platform<br/>platform Key Vault<br/>prd certificates (own renewal job)<br/>*.&lt;zone&gt;.prd.example.com"]
         p1 ~~~ p2 ~~~ p4 ~~~ p3 ~~~ kp

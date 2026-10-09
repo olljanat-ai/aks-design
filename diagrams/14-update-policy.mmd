@@ -1,0 +1,43 @@
+%% Update policy: the stateless cells run at two speeds, the stateful cluster changes only when absolutely necessary.
+%% Times are counted from the day AKS releases a Kubernetes patch version or node image.
+flowchart LR
+    rel(["AKS releases a patch<br/>(Kubernetes patch version<br/>or node image)"])
+
+    subgraph FAST["Fast speed – sl-az1 · minor N-1 (second latest GA)"]
+        direction LR
+        f_dev["dev<br/>+1 week"]
+        f_acc["acc<br/>+1 week after dev"]
+        f_prd["prd<br/>+1 week after acc<br/>(≈ 3 weeks)"]
+        f_dev --> f_acc --> f_prd
+    end
+
+    subgraph SLOW["Slow speed – sl-az2 (+ sl-az3) · one minor behind sl-az1 (N-2)"]
+        direction LR
+        s_dev["dev<br/>+1 month"]
+        s_acc["acc<br/>+1 month after dev"]
+        s_prd["prd<br/>+1 month after acc<br/>(≈ 3 months)"]
+        s_dev --> s_acc --> s_prd
+    end
+
+    subgraph SF["Stateful – sf · LTS minor"]
+        direction TB
+        sf_rule["Only when absolutely necessary:<br/>security, bug, AKS supportability<br/>patch existing nodes in place first,<br/>control plane only before node replacement"]
+        sf_lts["Same LTS minor kept as long as possible;<br/>upgrade to the next LTS minor within the<br/>last 6 months of LTS support, dev → acc → prd"]
+    end
+
+    rel ==> f_dev
+    rel ==> s_dev
+    rel -.->|"not automatically"| SF
+
+    gate["Each step only if the previous environment<br/>of the same speed is healthy on that version<br/>(no rollback, SLOs met during the wait)"]
+    gate -.-> FAST
+    gate -.-> SLOW
+
+    classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
+    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    class f_dev,f_acc,f_prd,s_dev,s_acc,s_prd sl
+    class sf_rule,sf_lts sf
+    class gate note
+    class rel cp

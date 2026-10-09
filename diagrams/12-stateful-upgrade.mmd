@@ -15,9 +15,9 @@ flowchart TB
     end
 
     cp["1. Control plane upgrade<br/>(no workload restart; API stays available)"]
-    np["2. Fixed-size node pools one AZ at a time:<br/>maxSurge 1 / maxUnavailable 0,<br/>cordon → drain (PDB respected) → reimage,<br/>node soak time before next node"]
+    np["2. Fixed-size node pools one AZ at a time:<br/>maxSurge 1 / maxUnavailable 0,<br/>cordon → drain (PDB respected) → reimage,<br/>node soak time before next node<br/>(only when nodes must be replaced)"]
     pdb["Guardrails per StatefulSet<br/>• ≥ 3 replicas, one per AZ (topologySpreadConstraints)<br/>• PDB maxUnavailable 1<br/>• Premium_ZRS / StandardSSD_ZRS disks: pod can move zone<br/>• readiness gates on replication / quorum"]
-    when["When<br/>• patch + node image: auto-upgrade channels inside<br/>  planned maintenance windows (dev → acc → prd staggered)<br/>• LTS minor: once per LTS cycle, rehearsed in dev and acc"]
+    when["When – only when absolutely necessary<br/>• OS security patches: in place on existing nodes,<br/>  inside maintenance windows (dev → acc → prd staggered)<br/>• Kubernetes patch: only for security / bug / support,<br/>  control plane only where possible<br/>• LTS minor: kept as long as LTS lasts, upgraded in the<br/>  last 6 months of LTS support, dev → acc → prd"]
 
     cp --> np
     np -->|"first"| n1
