@@ -34,7 +34,7 @@ encrypted.
 | R9b | Stateless clusters: overlay CNI, no service mesh / mTLS / application TLS, TLS-only Gateway API | Azure CNI Overlay powered by Cilium, Azure Virtual Network encryption between nodes, Traefik as Gateway API implementation with Let's Encrypt certificates for internal DNS names, distributed through Key Vault, and HTTPS-only listeners ([section 13](#13-encryption-in-transit-and-tls)) |
 | R10 | Stateful cluster spread over availability zones and running AKS LTS | Node pools per AZ 1/2/3, ZRS storage, Premium tier with Long Term Support |
 | R11 | Stateless: separate cluster per availability zone (at least two), ≥ 2 copies of every application, scaled on load | `sl-az1`, `sl-az2` (+ optional `sl-az3`) behind a zone-redundant traffic layer; policy-enforced replicas ≥ 2, HPA/KEDA, cluster autoscaler |
-| R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, wave-based Flux rollout, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
+| R12 | Fully automated zero-downtime upgrades of applications and clusters | Policy-enforced rollout guardrails, releases one cell at a time with cell affinity, pipeline-driven stateful rollout, drain-and-upgrade per stateless cluster, PDB-guarded per-AZ upgrade of the stateful cluster ([section 11](#11-zero-downtime-application-upgrades), [section 12](#12-zero-downtime-cluster-upgrades)) |
 | R13 | dev, acc and prd environments kept in sync | 3 × 2 = 6 clusters (3 × 3 = 9 with the stateful cluster) from the same IaC modules, all in-cluster state from one Git repository: FluxCD in the stateless clusters, CI/CD pipeline in the stateful cluster ([picture 9](#9-environments-six-to-nine-clusters), [picture 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)) |
 | R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](#14-policy-enforcement-with-the-azure-policy-add-on)) |
 | R15 | Certificates distributed through Key Vault, shared by all clusters | One shared **platform Key Vault per environment** (`kv-<env>-platform`) holds all certificates of that environment; a renewal job per environment issues one certificate per zone into it, and all clusters of the environment read it with plain Azure RBAC scoped to the individual certificate ([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
@@ -59,8 +59,30 @@ Next to the zone vaults, every environment has exactly **one shared platform Key
 | `kv-<env>-platform` | Once per environment (`kv-dev-platform`, `kv-acc-platform`, `kv-prd-platform`) | The environment's TLS certificates of all zones (`cert-<zone>-…`) and the renewal job's ACME account key | Plain Azure RBAC, role assignments scoped to single certificates ([section 13](#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
 
 Colour legend in all pictures: grey = control plane / platform / PaaS, blue = internal, orange = external,
-purple = hub / management, green = identity, teal = stateless cluster, pink = stateful cluster,
+purple = hub / management, green = identity, teal = stateless cluster (cell), pink = stateful cluster,
 yellow = notes / policy, red dashed = blocked.
+
+### Cells and bulkheads
+
+The design uses two isolation patterns at two levels, and this document uses their names:
+
+| Term | In this design | Pattern | Limits the impact of |
+|---|---|---|---|
+| **Cell** | One stateless cluster (`aks-<env>-sl-az<N>`) with its own VNet, all of it in one availability zone, running a full copy of every application of every isolation zone | [Cell-based architecture](https://docs.aws.amazon.com/solutions/cell-based-architecture-for-amazon-eks/) | An availability zone outage, a cluster failure, a bad release or a bad cluster upgrade: changes reach one cell at a time |
+| **Cell router** | The traffic layer: Front Door for external zones, internal Application Gateways for internal zones ([ingress](#ingress-traffic-from-outside-and-from-inside)) | Cell-based architecture | – (zone-redundant, outside the cells) |
+| **Isolation zone** | One exposure × country (`int-fi`, `ext-se`, …) with its own address space, subnets, node pool, Key Vault and policies, present in every cell | [Bulkhead](https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead) | A noisy, failing or compromised workload of one zone: it cannot use another zone's nodes, network or secrets |
+| **Shared tier** | Hub (Firewall, gateways, DNS), Azure PaaS, ACR, Key Vaults, the optional stateful cluster | – | Not split into cells; zone-redundant instead, and changed with extra care |
+
+Two differences from the classic cell-based architecture:
+
+- **Every cell serves every user.** The cells are full replicas, aligned with availability zones (as in the AWS
+  guidance for EKS, one cluster per availability zone); users are not partitioned between cells by tenant or
+  customer. The cell router only pins a user's *session* to a cell ([cell affinity](#ingress-traffic-from-outside-and-from-inside)).
+  Partitioning by country would be possible later, because the isolation zones already are the natural partition key.
+- **The data is shared.** All cells use the same PaaS services and stateful cluster, so a cell isolates compute and
+  releases, not data. Data changes therefore follow the [compatibility rule](#11-zero-downtime-application-upgrades).
+
+In this document "zone" means an isolation zone, unless it says availability zone (AZ) or zone-redundant.
 
 ---
 
@@ -319,40 +341,43 @@ cluster directly. The stateful cluster is never a backend of the traffic layer.
 | Applications in the same zone and cluster | Kubernetes Service (`<app>.<zone>-<app>.svc`) | Stays inside the cluster and its availability zone; never goes through the traffic layer or to the other cluster |
 | Applications in another zone | Not allowed (R5). If a business flow needs it, the caller is treated like any other client: it goes through the target zone's entry point and needs an explicit Firewall rule | – |
 
-**Recommendation: active-active, balanced per request, no stickiness.** All stateless clusters carry traffic all the
-time with equal weights. This works because the clusters are stateless:
+**Recommendation: active-active cells with cell affinity.** All cells (stateless clusters) carry traffic all the
+time, and new sessions are spread over them by equal weights. An interactive user then **stays in the cell that
+served their first request** for the rest of their session:
 
-- **The client's TLS session ends at the traffic layer**, not in a cluster. Front Door and Application Gateway
-  terminate the client's TLS (and run the WAF), then open their own TLS connections to the Traefik gateways and choose
-  the backend **per HTTP request**. Keeping "the same cluster for as long as the client's TLS session lives" would
-  therefore need cookie-based session affinity; it does not follow from TLS itself.
-- **No session affinity**, because there is no session state in the clusters: sessions and caches belong in
-  Azure PaaS (e.g. Azure Cache for Redis) or in the token. Without affinity, a failed or drained cluster loses no user
-  sessions, and the load stays even.
-- **Both clusters always prove that they work.** A cluster that only receives traffic in a failure is a cold standby
-  with cold caches and untested capacity. With active-active, a cluster failure only removes half (or a third) of the
-  backends, and the health probes remove it within seconds.
-- **Long-lived connections** (WebSockets, Server-Sent Events, gRPC streaming) naturally stay on one cluster for the
-  life of the connection. Applications that use them must reconnect with back-off, because draining a cluster closes
-  them after the drain timeout.
-- **Exceptions:** an application that cannot avoid server-side session state gets cookie-based affinity on its own
-  route as a documented exception. It must still survive a cluster being drained (the affinity moves to the other
-  cluster).
+- **The client's TLS session ends at the traffic layer**, not in a cell. Front Door and Application Gateway terminate
+  the client's TLS (and run the WAF), then open their own TLS connections to the Traefik gateways and choose the backend
+  **per HTTP request**. TLS therefore does not keep a user on one cell; that is done with the traffic layer's
+  **cookie-based session affinity** (Front Door origin group / Application Gateway backend setting).
+- **The affinity exists for consistent versions, not for state.** Cells hold no session state: sessions and caches
+  belong in Azure PaaS (e.g. Azure Cache for Redis) or in the token, so a user can be moved to another cell at any
+  time without losing anything. Affinity only makes sure that a user sees **one application version at a time**
+  while a release moves through the cells one by one ([releases cell by cell](#releases-cell-by-cell)).
+- **A failed or drained cell moves its users.** When the health probe fails or the cell is taken out of the traffic
+  layer, the next request of each pinned user goes to another cell, and the affinity follows it there.
+- **All cells always prove that they work.** A cluster that only receives traffic in a failure is a cold standby
+  with cold caches and untested capacity. With active-active, a cell failure only affects the users of that cell
+  (half or a third), and only until their next request.
+- **Clients without cookies** (API clients, other systems) are balanced per request. They can meet two versions
+  during a release, which the [compatibility rule](#11-zero-downtime-application-upgrades) covers.
+- **Long-lived connections** (WebSockets, Server-Sent Events, gRPC streaming) stay on one cell for the life of the
+  connection. Applications that use them must reconnect with back-off, because draining a cell closes them after the
+  drain timeout.
 
 How the traffic layer is configured:
 
 | Setting | Front Door (external) | Application Gateway (internal) |
 |---|---|---|
-| Load balancing | Weighted round robin, equal weights, all origins in the same priority; *additional latency* large enough that all clusters of the region count as equally fast | Round robin over the backend pool (Application Gateway v2 has no backend weights) |
-| Session affinity | Off | Off (cookie-based affinity only as an exception per route) |
+| Load balancing of new sessions | Weighted round robin, equal weights, all origins in the same priority; *additional latency* large enough that all cells of the region count as equally fast | Round robin over the backend pool (Application Gateway v2 has no backend weights) |
+| Cell affinity | Session affinity on the origin group (cookie) | Cookie-based affinity on the backend setting |
 | Health probe | HTTPS `GET` to the zone's Traefik health route, which answers only when Traefik and its routes are ready | Same |
-| Take a cluster out | Disable the cluster's origin | Remove the cluster's IP from the backend pool; connection draining on, e.g. 300 s |
-| Return a cluster gradually | Raise the cluster's origin weight from 10 % to 50 % to 100 % of the other clusters' weight | Not possible: after smoke tests through the cluster's own test host name (below) the cluster is added back to the pool in one step |
+| Take a cell out | Disable the cell's origin; pinned users move on their next request | Remove the cell's Traefik IP from the backend pool; connection draining on, e.g. 300 s; pinned users move on their next request |
+| Return a cell | Raise the cell's origin weight from 10 % to 50 % to 100 % of the other cells' weight; only new sessions land on it | Added back to the pool in one step after the smoke tests; only new sessions land on it |
 
-Every Traefik gateway also answers to a **per-cluster test host name** (e.g. `*.sl-az1.int-fi.prd.example.com`,
+Every Traefik gateway also answers to a **per-cell test host name** (e.g. `*.sl-az1.int-fi.prd.example.com`,
 internal DNS only), published through the same Application Gateway as an extra listener whose backend pool contains
-only that cluster. The upgrade pipeline runs its smoke and synthetic tests through the real WAF and TLS path before
-the cluster gets user traffic back ([section 12](#stateless-clusters)).
+only that cell. The release and upgrade pipelines run their smoke and synthetic tests through the real WAF and TLS
+path before the cell gets user traffic back ([releases](#releases-cell-by-cell), [section 12](#stateless-clusters)).
 
 The internal Application Gateways live in a separate **edge VNet** per environment (`vnet-<env>-edge`), peered to the
 hub. Each internal zone's gateway is in its own subnet inside the zone's address space ([address plan](#vnets-and-address-plan)), so
@@ -566,9 +591,10 @@ better, and the Internet-less cluster runs one component less.
   (`provider: azure`) and verifies the cosign signature.
 - **Order inside a cluster**: Kustomization `dependsOn` chain `infra-controllers` → `infra-configs` (CRDs, Cilium
   policies) → `apps`, each with `wait: true` and health checks, `prune: true` to remove anything deleted from Git.
-- **Waves**: `sl-az1` follows tag `<env>-wave1`; `sl-az2` and `sl-az3` follow `<env>-wave2`. CI moves `wave2` only
-  after all wave 1 Kustomizations are `Ready` and the error-rate / latency checks pass, so a bad change never reaches
-  every stateless cluster at once. Rollback = move the tag back.
+- **One tag per cell**: `sl-az1` follows tag `<env>-sl-az1`, `sl-az2` follows `<env>-sl-az2`, and so on. The release
+  pipeline moves one tag at a time, while that cell is drained, and the next one only after the cell is back in
+  traffic and its error-rate / latency checks pass ([releases cell by cell](#releases-cell-by-cell)), so a bad change
+  never reaches every cell at once. Rollback = drain the cell and move the tag back.
 - **Drift** is corrected on every reconcile (interval 10 min, alerts to the platform channel through Flux
   notification-controller).
 
@@ -590,7 +616,7 @@ better, and the Internet-less cluster runs one component less.
      canary first; run smoke tests against the applications' internal load balancers;
   7. on failure stop and alert; rollback = re-run the pipeline with the previous artifact tag (data migrations are
      forward-only, see the compatibility rule in [section 11](#11-zero-downtime-application-upgrades)).
-- **Order inside an environment**: the release pipeline runs the **stateful stage before the stateless waves** –
+- **Order inside an environment**: the release pipeline runs the **stateful stage before the cells** –
   providers before consumers. Stateful changes must be backwards compatible with the running stateless version anyway
   (expand → migrate → contract).
 - **Drift**: there is no reconcile loop, so a scheduled run (nightly) does steps 1–3 only and alerts on any
@@ -614,11 +640,47 @@ application can be deployed in a way that breaks a zero-downtime rollout or a no
 
 - **Scaling on load**: HPA on CPU/memory or KEDA on queue length / request rate; the cluster autoscaler adds nodes.
   In stateless clusters `maxReplicas` and autoscaler limits are sized so that one cluster can take the full load.
-- **Compatibility rule**: during a wave rollout two versions run at the same time (different clusters), so API and
-  message changes must be backwards compatible and database changes follow *expand → migrate → contract* over
-  separate releases.
-- **Progressive delivery (optional)**: Flagger with Gateway API (`HTTPRoute` weights on the Traefik gateway) for
-  canary releases with automatic rollback inside a stateless cluster.
+- **Compatibility rule**: during a release two versions run at the same time (in different cells, and for a few
+  minutes inside a cell during the rolling update), so API and message changes must be backwards compatible and
+  database changes follow *expand → migrate → contract* over separate releases. Cell affinity reduces what *users*
+  see of this, but cookie-less clients, rollbacks and the data shared by all cells still meet both versions.
+
+### Releases cell by cell
+
+A release – a new signed fleet artifact `fleet:<git-sha>` with any number of application changes – moves through the
+cells of an environment **one cell at a time**, with the same *drain → change → test → return* procedure as a
+cluster upgrade ([section 12](#stateless-clusters)). Together with cell affinity, every interactive user switches
+from the old to the new version **exactly once and never back**:
+
+1. **Stateful stage first** (only if the environment has a stateful cluster): providers before consumers
+   ([section 10](#10-keeping-clusters-in-sync-flux-for-stateless-pipelines-for-stateful)).
+2. **Drain cell 1**: take it out of the traffic layer. Its users move to the other cells, which still run the old
+   version, so nobody sees a change yet.
+3. **Deploy**: the pipeline moves the cell's tag (`<env>-sl-az1`) to the new artifact; Flux rolls it out and the
+   pipeline waits until all Kustomizations are `Ready`. No user traffic reaches the cell during the rolling update.
+4. **Test** through the per-cell test host names: smoke and synthetic tests over the real WAF and TLS path.
+5. **Return** the cell: only *new* sessions land on it (Front Door weights 10 % → 50 % → 100 %), and their users see
+   only the new version. The pipeline watches error-rate and latency SLOs per cell; on a breach it drains the cell
+   again – its users fall back to the old version in the other cells – and moves the tag back.
+6. **Soak**, then repeat for the next cell. Draining it moves its users to the upgraded cell(s): this is the moment
+   they switch to the new version. After the last cell all users are on the new version.
+
+| Client | What it sees during a release |
+|---|---|
+| Browser / app with cookies | One version per session; switches once, old → new, when its cell is drained |
+| API client without cookies, other systems | Either version per request until the last cell is done – covered by the compatibility rule |
+| Long-lived connection (WebSocket, SSE) | Reconnects when its cell is drained, then stays on the new or old version as above |
+
+Consequences:
+
+- **Releases are trains.** Each cell costs one drain time plus rollout, tests and the return ramp, so many changes
+  ride in one fleet artifact instead of one artifact per application change. An urgent fix takes the same path with
+  a shorter soak.
+- **N+1 capacity** is needed for releases too: while one cell is drained, the others carry its load (the same
+  sizing as for cluster upgrades).
+- **The first cell is the canary.** In-cell progressive delivery (Flagger with `HTTPRoute` weights on the Traefik
+  gateway) is optional; an application that uses it must enable Flagger's cookie-based stickiness, otherwise users of
+  that cell would jump between versions again.
 
 ## 12. Zero-downtime cluster upgrades
 
@@ -629,19 +691,20 @@ Cluster upgrades are triggered by pipelines (or Azure Kubernetes Fleet Manager u
 
 ![Stateless upgrade](images/11-stateless-upgrade.svg)
 
-One zonal cluster at a time is **taken out of traffic, upgraded and returned** – users never hit a cluster that is
-being changed:
+One cell at a time is **taken out of traffic, upgraded and returned** – users never hit a cell that is being
+changed. It is the same procedure as an application release ([releases cell by cell](#releases-cell-by-cell)), and the
+two never run in the same cell at the same time:
 
 1. pre-scale the remaining cluster(s) to full-load capacity;
 2. take the cluster out of the traffic layer (disable its Front Door origins, remove it from the Application Gateway
    backend pools) and wait for connection draining;
 3. upgrade control plane and node pools – or, for large changes (new VNet, CNI, OS SKU), **create a fresh cluster**
    from IaC and let Flux bootstrap it (blue/green at cluster level);
-4. wait until all Flux Kustomizations are `Ready`, run smoke and synthetic tests through the cluster's per-cluster test
+4. wait until all Flux Kustomizations are `Ready`, run smoke and synthetic tests through the cell's per-cell test
    host names ([ingress](#ingress-traffic-from-outside-and-from-inside));
 5. return traffic while watching error-rate and latency SLOs – gradually with Front Door weights (10 % → 50 % → 100 %),
    in one step to the Application Gateway backend pools; on breach take the cluster out again and stop;
-6. repeat for the next zonal cluster.
+6. repeat for the next cell.
 
 Node image / OS security updates use the same procedure or – because every app has ≥ 2 replicas and a PDB – the AKS
 node OS auto-upgrade channel in maintenance windows staggered per cluster (`sl-az1` and `sl-az2` never on the same day).
@@ -834,6 +897,10 @@ Limits of the add-on and how the design handles them:
   is the platform the owner of these prefixes in the central IPAM?
 - Is CoreDNS on the shared system pool acceptable, or should each zone run its own DNS (e.g. NodeLocal DNS)?
 - One Front Door profile per environment with a WAF policy per external zone (current draft), or a profile per zone?
+- Release cadence: is one fleet release train per environment and day (or a few) fast enough, given that each cell
+  costs a drain, rollout, tests and a return ramp? Which applications need a faster path?
+- Do any important clients (mobile apps, partner APIs) lack cookie support, so that they would see both versions during
+  a release, and are their APIs strictly backwards compatible?
 - Is the Application Gateway's one-step return of an upgraded cluster acceptable for internal zones, or is gradual
   return needed there too?
 - Key Vault ABAC is preview – acceptable for production, or fall back to vault per application until GA? (Affects only

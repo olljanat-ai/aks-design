@@ -1,5 +1,5 @@
 %% One fleet repository, one signed OCI artifact per commit in each environment's private ACR.
-%% Stateless clusters pull it with FluxCD in waves; the stateful cluster gets it from a CI/CD pipeline that runs on
+%% Stateless clusters (cells) pull it with FluxCD, one cell at a time while that cell is drained; the stateful cluster gets it from a CI/CD pipeline that runs on
 %% agents in the management network (the only network that reaches its private API server).
 flowchart LR
     subgraph GIT["Fleet Git repository"]
@@ -13,30 +13,30 @@ flowchart LR
 
     subgraph ENV["One environment"]
         direction TB
-        acr["ACR (private endpoint)<br/>oci://acr&lt;env&gt;/fleet:&lt;sha&gt;<br/>tags: &lt;env&gt;-wave1, &lt;env&gt;-wave2"]
+        acr["ACR (private endpoint)<br/>oci://acr&lt;env&gt;/fleet:&lt;sha&gt;<br/>tags: one per cell<br/>&lt;env&gt;-sl-az1, &lt;env&gt;-sl-az2, …"]
         subgraph MG["Management VNet"]
             sfp["Stateful deployment pipeline<br/>self-hosted agent · workload identity federation<br/>verify signature → policy gate → kubectl diff<br/>→ approval → server-side apply → rollout checks"]
         end
         f3["aks-&lt;env&gt;-sf<br/>no Flux"]
-        subgraph W1["Wave 1"]
-            f1["Flux in aks-&lt;env&gt;-sl-az1<br/>OCIRepository tag &lt;env&gt;-wave1"]
+        subgraph W1["Cell 1 (drained while it changes)"]
+            f1["Flux in aks-&lt;env&gt;-sl-az1<br/>OCIRepository tag &lt;env&gt;-sl-az1"]
         end
-        subgraph W2["Wave 2"]
-            f2["Flux in aks-&lt;env&gt;-sl-az2 (and az3)<br/>OCIRepository tag &lt;env&gt;-wave2"]
+        subgraph W2["Next cell (same procedure)"]
+            f2["Flux in aks-&lt;env&gt;-sl-az2, then az3<br/>OCIRepository tag &lt;env&gt;-sl-az2 / -az3"]
         end
     end
 
-    gate{"Wave 1 healthy?<br/>Kustomization Ready,<br/>SLO / error-rate checks"}
+    gate{"Cell healthy?<br/>Kustomizations Ready, tests via<br/>per-cell host names, returned to<br/>traffic, SLO / error-rate checks"}
 
     GIT -->|"merge to main"| ci -->|"push"| acr
     ci -->|"1. stateful stage first"| sfp
     acr -->|"pull + verify"| sfp
     sfp -->|"Private Link to API server"| f3
-    sfp -->|"2. success: tag &lt;env&gt;-wave1"| acr
+    sfp -->|"2. success: drain cell 1,<br/>move tag &lt;env&gt;-sl-az1"| acr
     acr -->|"pull via workload identity<br/>verify cosign signature"| f1
     f1 --> gate
-    gate -->|"3. yes: CI moves tag &lt;env&gt;-wave2"| acr
-    gate -.->|"no: stop, revert tag"| ci
+    gate -->|"3. yes, after soak: drain next cell,<br/>move its tag"| acr
+    gate -.->|"no: drain cell, revert tag"| ci
     acr --> f2
 
     classDef note fill:#fffde7,stroke:#9e9d24,color:#000
