@@ -46,7 +46,7 @@ flowchart LR
     job -->|"order / renew"| le
     job -->|"TXT record"| pubdns
     job -->|"import certificate"| kv
-    kv -.->|"zone's External Secrets Operator,<br/>RBAC on this certificate only"| tr
+    kv -.->|"Traefik's own identity (platform),<br/>RBAC on this certificate only"| tr
     kv -.->|"zone's External Secrets Operator,<br/>RBAC on this certificate only"| db
     plain -.-x|"rejected: no listener, no LB port,<br/>Azure Policy denies HTTP listeners"| tr
 

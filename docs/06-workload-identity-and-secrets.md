@@ -32,8 +32,9 @@ storage account keys for Azure services.
   "Local auth disabled" is enforced with Azure Policy on the resources, so a key-based fallback cannot be switched
   on later. Application configuration contains only endpoints and client IDs, which are not secrets.
 - **Platform components use workload identity too**: Flux (`OCIRepository` `provider: azure`), the stateful
-  deployment pipeline (workload identity federation, no client secret), External Secrets Operator (secrets and
-  certificates, below), the Azure Monitor agent, external-dns. Images are pulled
+  deployment pipeline (workload identity federation, no client secret), Traefik (its zone certificate), External
+  Secrets Operator (below), the Azure Monitor agent, external-dns. Unlike applications, platform components may use
+  Key Vault directly with their own identity ([below](#platform-components-may-use-key-vault-directly)). Images are pulled
   with the kubelet identity, which has only `AcrPull` on the environment's ACR – no `imagePullSecrets`.
 
 ## Secrets only when needed
@@ -64,8 +65,9 @@ vault stays small and the preview dependency affects only the few exceptions.
 
 ## Delivered only by External Secrets Operator
 
-**Rule: no application reads Key Vault itself.** Secrets and certificates reach pods only as Kubernetes `Secret`s
-written by [External Secrets Operator](https://external-secrets.io/) (ESO). The **Secrets Store CSI driver is not
+**Rule: no application reads Key Vault itself.** Secrets and certificates reach application pods only as Kubernetes
+`Secret`s written by [External Secrets Operator](https://external-secrets.io/) (ESO). The rule applies to application
+namespaces; platform components are the exception ([below](#platform-components-may-use-key-vault-directly)). The **Secrets Store CSI driver is not
 used**: the AKS Key Vault secrets provider add-on (`azure-keyvault-secrets-provider`) is disabled on every cluster and
 Azure Policy denies enabling it, its CRDs are not installed, and admission rejects `SecretProviderClass` objects and
 `secrets-store.csi.k8s.io` volumes ([section 14](14-policy-enforcement.md)).
@@ -92,8 +94,8 @@ Azure Policy denies enabling it, its CRDs are not installed, and admission rejec
   `ClusterExternalSecret` and `PushSecret` are platform only. An application can therefore only ever pull with its
   own reader identity, and Key Vault ABAC still decides which secret names that is – application A's
   `ExternalSecret` for `b-…` fails with `403`.
-- **No other way in.** Application identities have no Key Vault role at all; Cilium allows `*.vault.azure.net`
-  only from `<zone>-secrets`, and Azure Policy rejects an application egress policy that names a vault
+- **No other way in.** Application identities have no Key Vault role at all; in application namespaces Cilium
+  never allows `*.vault.azure.net` (only `<zone>-secrets` and the platform namespaces below reach a vault), and Azure Policy rejects an application egress policy that names a vault
   ([section 16](16-advanced-networking-and-fqdn-egress.md)). In application namespaces, admission accepts
   `Secret`s only from the zone's ESO controller (plus Helm release Secrets), so a secret in Git, Helm values or
   created with `kubectl` is rejected as before. Only the environment IaC module assigns Key Vault data-plane roles;
@@ -103,6 +105,22 @@ Azure Policy denies enabling it, its CRDs are not installed, and admission rejec
   updates the files after a rotation; no `subPath`) or as environment variables (picked up only on the next
   rollout). `refreshInterval` is 1 hour by default, shorter where a rotation must take effect faster; the
   `SecretSynced` condition and ESO's metrics alert the platform and the application team when a sync fails.
+
+## Platform components may use Key Vault directly
+
+Platform components in platform namespaces (`<zone>-gateway`, `<zone>-secrets`, `flux-system`, monitoring) are owned,
+reviewed and upgraded by the platform team, so they are not forced through ESO. Such a component may read Key Vault
+directly with **its own workload identity**, with a data-plane role scoped as narrowly as Key Vault allows (a single
+certificate or secret where possible), declared in the IaC module and reviewed with the platform change, and with the
+vault in its namespace's platform-owned egress policy. The Secrets Store CSI driver stays disabled for them too.
+
+- **Traefik** has its own identity `id-<zone>-gateway` with **Key Vault Secrets User** on its zone certificate
+  `kv-<env>-platform/secrets/cert-<zone>-wildcard` ([section 13](13-encryption-in-transit-and-tls.md#certificates-issued-centrally-distributed-through-the-platform-key-vault)).
+  Traefik has no native Key Vault provider, so the certificate is loaded into the `kubernetes.io/tls` Secret that
+  its `Gateway` listener references by a `SecretStore` in `<zone>-gateway` that authenticates **as Traefik's own
+  ServiceAccount** – no separate reader identity.
+- **External Secrets Operator** itself, Flux and the monitoring components follow the same rules: own identity, own
+  narrow roles, egress policy owned by the platform.
 
 Trade-offs of delivering secrets as Kubernetes `Secret`s instead of CSI file mounts:
 
