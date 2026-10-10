@@ -30,7 +30,7 @@ rest with customer-managed keys is in [section 18](18-encryption-at-rest-and-cus
   `*.ext-fi.prd.example.com`, resolved only by the Private DNS zone in the hub (split horizon: the name has no
   public A record). Traefik serves the zone's wildcard certificate from the platform Key Vault
   ([below](#certificates-issued-centrally-distributed-through-the-platform-key-vault)). Because the certificate is publicly
-  trusted, Front Door / NGINXaaS validate the backend without uploading custom root certificates, and
+  trusted, Front Door / Application Gateway validate the backend without uploading custom root certificates, and
   clients inside the corporate network need no private CA.
 - **No non-TLS traffic.** Traefik has only the `websecure` entry point on 443; port 80 is not exposed at all (no
   HTTP→HTTPS redirect listener either), the internal load balancer has only port 443, and the NSG on `snet-<zone>-ilb`

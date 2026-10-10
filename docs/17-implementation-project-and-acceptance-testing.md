@@ -23,7 +23,7 @@ then goes back to its own.
 |---|---|---|
 | Entra ID | New tenant, own subscriptions: `sub-mgmt`, `sub-hub`, `sub-aks-dev`; test users and groups only, no corporate identities, no B2B guests from the corporate tenant | Identities, PIM, workload identity federation and RBAC can be designed and redone freely; nothing can reach corporate resources with an identity from this tenant |
 | Network | Same hub-and-spoke as [picture 1](01-overview.md) with Azure Firewall, Private DNS, Bastion and the management VNet, but **no ExpressRoute / VPN gateway and no peering to the corporate hub** | The design is complete except for the one link that would connect it |
-| Corporate network | Simulated by a **client VNet** peered to the hub, routed through the Firewall like on-premises: internal test clients, load generators, a test DNS resolver forwarding to the hub Private DNS | Internal zones (`int-*`), NGINXaaS and the corporate-side Firewall rules can be tested end to end |
+| Corporate network | Simulated by a **client VNet** peered to the hub, routed through the Firewall like on-premises: internal test clients, load generators, a test DNS resolver forwarding to the hub Private DNS | Internal zones (`int-*`), the internal Application Gateway and the corporate-side Firewall rules can be tested end to end |
 | Address plan | The **real prefixes reserved from the corporate IPAM** ([address plan](08-cluster-types-stateless-and-stateful.md#vnets-and-address-plan)), not temporary ones | Connecting later needs no re-addressing; overlaps with on-premises are found now |
 | Azure Policy | The corporate landing zone initiatives and the platform's own definitions ([section 14](14-policy-enforcement.md)) assigned at the same scopes as in the corporate tenant, **all with effect `audit` / `enforcementMode: DoNotEnforce`** | Nothing blocks a prototype, but the compliance view shows from day one what the corporate tenant would deny |
 | DNS and certificates | A separate test domain (e.g. `example-test.com`) with its own public validation zone for Let's Encrypt | The corporate DNS zones are not touched |
@@ -53,7 +53,7 @@ Rules that keep the build tenant from drifting away from what will be deployed l
 | Phase | Goal | Exit criterion |
 |---|---|---|
 | 1. Foundation | Build tenant, management and hub, `sub-aks-dev`, pipelines and OIDC, Azure Policy in audit, the client VNet | A stateless cell can be created and deleted by the pipeline |
-| 2. Rapid prototyping | Build → test → change until the design meets every requirement; [open questions](open-questions.md) answered by experiments (NAP with custom subnets, eBPF host routing with VNet encryption, Key Vault ABAC, NGINXaaS, …); AI agents built with full permissions | Every requirement R1–R20 has at least one automated test that passes; design documents updated to what was built; agent roles and risk tiers derived from the logged agent actions |
+| 2. Rapid prototyping | Build → test → change until the design meets every requirement; [open questions](open-questions.md) answered by experiments (NAP with custom subnets, eBPF host routing with VNet encryption, Key Vault ABAC, private-only Application Gateway, …); AI agents built with full permissions | Every requirement R1–R20 has at least one automated test that passes; design documents updated to what was built; agent roles and risk tiers derived from the logged agent actions |
 | 3. Acceptance testing in dev | Prove performance, HA, zero-downtime upgrades, recovery and operability with **all policies switched to `deny`** and the AI agents on their least-privilege identities | All tests in the tables below pass, results recorded |
 | 4. Security reviews | Independent review of the built platform | No open critical or high findings; medium findings have an owner and a date |
 | Connection readiness gate | Platform owner, security and network team approve connecting | Checklist [below](#connection-readiness-gate) complete |
@@ -68,7 +68,7 @@ platform change for the rest of the platform's life.
 A **reference application** is deployed into every isolation zone of every cell before acceptance starts: an HTTP API
 with a frontend in the stateless cells, a PaaS database through workload identity, a Key Vault secret exception, an
 FQDN egress policy and – if the stateful cluster is built – a StatefulSet with three replicas. Load is generated from
-the Internet through Front Door for `ext-*` zones and from the client VNet through NGINXaaS for `int-*` zones, and
+the Internet through Front Door for `ext-*` zones and from the client VNet through Application Gateway for `int-*` zones, and
 the generators' own error rate and latency are the measurement in every test below. Targets marked *TBD* are
 agreed with the application owners before phase 3 starts.
 
@@ -95,7 +95,7 @@ Automated negative tests, kept from phase 2, that run as a pipeline stage:
 
 | Test | How | Pass criterion |
 |---|---|---|
-| Peak load per cell | One cell takes 100 % of the expected prd peak (the other cells drained), for 1 hour | p95 / p99 latency and error rate within targets (*TBD*); no throttling of Firewall, NGINXaaS, Front Door, Key Vault or Entra ID |
+| Peak load per cell | One cell takes 100 % of the expected prd peak (the other cells drained), for 1 hour | p95 / p99 latency and error rate within targets (*TBD*); no throttling of Firewall, Application Gateway, Front Door, Key Vault or Entra ID |
 | Scale-out from idle | Load ramps from 10 % to 100 % of peak in 5 minutes | HPA / KEDA and NAP add capacity before latency breaches its target; time to new nodes measured per VM family, arm64 and spot included |
 | Spot eviction under load | Simulated eviction of all spot nodes of a zone | Pods move to on-demand without errors beyond the budget; no SLO breach |
 | Soak | 72 hours at 60 % of peak | No growth of memory, connections, SNAT port use or latency |
@@ -112,12 +112,12 @@ and Kubernetes chaos experiments, every one under load. Each experiment must als
 
 | Fault | Pass criterion |
 |---|---|
-| Loss of a whole cell (stop all nodes of `sl-az1`, then `sl-az2`) | Cell router moves all traffic to the remaining cells within the target (*TBD*); errors within budget; the surviving cell carries 100 % |
+| Loss of a whole cell (stop all nodes of `sl-az1`, then `sl-az2`) | Front Door moves external traffic to the remaining cells within the target (*TBD*); when the internal active cell is stopped, the alert-driven switch moves internal traffic to the standby within the internal recovery time target (*TBD*); errors within budget; the surviving cell carries 100 % |
 | AZ outage (Chaos Studio zone-down on all VMSS of one AZ, stateless and stateful) | Same as above for stateless; the stateful cluster keeps quorum and serves from two AZs |
 | Node failures: kill system pool node, application node, the node of a Traefik replica | No user-visible errors beyond budget; PDBs respected |
 | Platform components: restart Cilium agents, ACNS security agent, CoreDNS, Traefik, Flux, the Azure Policy add-on | FQDN policies stay enforced during Cilium restarts; traffic continues; admission fails closed as designed |
 | Dependency loss: PaaS failover (zone-redundant database), Key Vault unavailable for External Secrets Operator, ESO controller of a zone stopped, Entra ID token endpoint slow | Applications keep running and new pods start with cached credentials and the Secrets already in the cluster; failed syncs alert; recovery without manual steps |
-| Traffic layer: remove a Front Door origin, restart an NGINXaaS deployment | Failover within target; cell affinity re-established |
+| Traffic layer: remove a Front Door origin; fail the active backend pool of an internal Application Gateway; switch the internal active cell back and forth under load | Failover within target; cell affinity re-established; planned switches without failed requests (connection draining) |
 | Firewall rule mistake (block a platform FQDN in one cell) | Detected by monitoring, contained to one cell |
 
 ### Zero-downtime upgrades and changes
@@ -164,7 +164,7 @@ in the build tenant with all policies in `deny`.
 | Cloud configuration | Defender for Cloud secure score and recommendations, the corporate Azure Policy initiatives in `deny` with zero non-compliant resources (or approved exemptions), CIS AKS benchmark, IaC scanning in CI | Security team |
 | Identity and access | All role assignments in all subscriptions, PIM settings and break-glass accounts, no standing write access; workload identity federated credentials (issuer, subject per ServiceAccount); GitHub OIDC subjects per environment; AI agent identities read-only, full prototyping permissions removed and the derived roles compared with the logged actions | Security team + identity team |
 | Network | NSG and Firewall rule sets against [section 5](05-allowed-and-blocked-flows.md), FQDN allow-lists per zone, WAF policies, no unexpected public endpoints, the stateful cluster's "no Internet" exceptions | Network + security teams |
-| Penetration test | External: Internet → Front Door → `ext-*` zones. Internal: client VNet → NGINXaaS → `int-*` zones. **Assumed breach**: a compromised pod in each zone tries container escape, IMDS / token theft, lateral movement to other zones, cells, Key Vaults, the API server and the stateful cluster | Independent party |
+| Penetration test | External: Internet → Front Door → `ext-*` zones. Internal: client VNet → Application Gateway → `int-*` zones. **Assumed breach**: a compromised pod in each zone tries container escape, IMDS / token theft, lateral movement to other zones, cells, Key Vaults, the API server and the stateful cluster | Independent party |
 | Supply chain | Image sources and ACR import path, vulnerability scanning, image signatures / digests, Flux source verification, branch protection and required reviews, secret scanning of all repositories | Security team |
 | Data protection | Encryption in transit verified (VNet encryption on the node links, TLS-only listeners), encryption at rest with customer-managed keys verified per cluster and zone ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)): KMS and disk encryption set on every cluster, encryption at host on every node, per-zone StorageClasses only; a key rotation and a key revocation (disable, recover) rehearsed in dev; data residency per country zone | Security + privacy |
 | Detection and response | Defender for Containers and Defender for Cloud alerts reach the SOC tooling; the pen test's activity was detected | SOC |
@@ -194,8 +194,8 @@ and the network team:
 The accepted tag is deployed with the same pipelines to the corporate landing zone, first dev. There, only what the
 build tenant could not test is added, so acceptance there is short:
 
-- Real ExpressRoute / VPN path: latency and throughput from on-premises clients, corporate proxies and their NAT
-  effect on cell affinity.
+- Real ExpressRoute / VPN path: latency and throughput from on-premises clients through the
+  internal Application Gateway.
 - Corporate DNS resolution of the internal zone names; corporate Entra ID groups, Conditional Access and PIM.
 - Integration with on-premises systems and the real SOC.
 - A repeat of the isolation tests and a short load and failover test, to show nothing changed with the move.

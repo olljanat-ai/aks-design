@@ -9,11 +9,14 @@
 - One Front Door profile per environment with a WAF policy per external zone (current draft), or a profile per zone?
 - Release cadence: is one fleet release train per environment and day (or a few) fast enough, given that each cell
   costs a drain, rollout, tests and a return ramp? Which applications need a faster path?
-- Client-IP affinity: how much traffic comes from large NATs (corporate proxies, carrier-grade NAT) or from clients
-  that change addresses? This decides how even the load is and how many clients can meet both versions in a release.
-- Internal entry point: is F5 NGINXaaS (an Azure partner service) acceptable, and is NGINX App Protect WAF generally
-  available for it in our region? Alternatives: self-managed NGINX/Envoy with consistent hashing on VM scale sets, or
-  Application Gateway with cookie affinity, accepting that cookie-less internal clients see both versions.
+- Client-IP affinity (external zones): how much traffic comes from large NATs (carrier-grade NAT, partners' proxies)
+  or from clients that change addresses? This decides how even the load is and how many clients can meet both versions in a release.
+- Internal zones, active-passive: what recovery time is acceptable for internal applications when the active cell
+  fails (target for the alert-driven switch)? Is one active cell per environment enough, or do some internal zones
+  or applications need their own active cell (one routing rule per zone or per application host name)?
+- Internal entry point: confirm that the private-only Application Gateway deployment (no public frontend IP) is
+  generally available in our region together with UDR `0.0.0.0/0` → Firewall in its subnet, and its WAF_v2 limits
+  (listeners, backend pools, rules) for one gateway per internal zone with per-cell test host names.
 - Node auto provisioning in the stateless clusters: confirm that NAP with custom subnets per `NodePool` is supported
   (and generally available) in our region together with a private cluster, API Server VNet Integration, outbound type
   `userDefinedRouting` and the Azure Policy add-on. Fallback: classic node pools per zone with the cluster autoscaler.

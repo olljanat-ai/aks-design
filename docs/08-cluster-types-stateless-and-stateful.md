@@ -56,31 +56,44 @@ stateless clusters.
 ## Incoming traffic: from outside and from inside
 
 All requests to applications enter through a **traffic layer** (the cell router) that lives outside the cells, so it
-survives every cluster upgrade or rebuild. It has one entry point per isolation zone, and every entry point has the
-zone's Traefik gateway of **every** cell as its backends, always over HTTPS (port 443 only). Clients never connect to a
-cell directly. The stateful cluster is never a backend of the traffic layer.
+survives every cluster upgrade or rebuild. It has one entry point per isolation zone, always over HTTPS (port 443
+only). Clients never connect to a cell directly. The stateful cluster is never a backend of the traffic layer.
+
+The two kinds of zones use the cells differently, because their availability requirements differ:
+
+- **External zones (`ext-*`): active-active.** Every cell serves, each client is pinned to one cell by its IP
+  address, and a failed cell's clients move to another cell automatically.
+- **Internal zones (`int-*`): active-passive.** All internal traffic of an environment goes to **one active cell**;
+  the other cell(s) run the same version of everything as a warm **standby**. Switching the active cell is a
+  pipeline step, so a cell failure costs internal applications a short outage until the switch (recovery time
+  target *TBD*, minutes) – accepted because internal applications have lower availability requirements than
+  external ones.
 
 | Source | Entry point | Path to the cells |
 |---|---|---|
-| Internet (external zones `ext-*`) | **Azure Front Door Premium** with a WAF policy per zone; public DNS name of the application → Front Door endpoint | Private Link origins: a Private Link Service on the Traefik internal load balancer of the zone in each cell. No public IP in any spoke |
-| Corporate network (internal zones `int-*`) | **[F5 NGINXaaS for Azure](https://docs.nginx.com/nginxaas/azure/)** (managed NGINX Plus) with NGINX App Protect WAF, one deployment per zone, private IP only, in the edge VNet `vnet-<env>-edge`; the name `*.int-fi.prd.example.com` resolves to it in the hub Private DNS | On-premises → ExpressRoute/VPN → hub Firewall → NGINXaaS → hub Firewall → Traefik internal load balancer of the zone in each cell |
+| Internet (external zones `ext-*`) | **Azure Front Door Premium** with a WAF policy per zone; public DNS name of the application → Front Door endpoint | Private Link origins: a Private Link Service on the Traefik internal load balancer of the zone in **every** cell. No public IP in any spoke |
+| Corporate network (internal zones `int-*`) | **Azure Application Gateway WAF_v2**, private-only deployment (private frontend IP, no public IP), zone-redundant over AZ 1–3, one per internal zone in the edge VNet `vnet-<env>-edge`; the name `*.int-fi.prd.example.com` resolves to it in the hub Private DNS | On-premises → ExpressRoute/VPN → hub Firewall → Application Gateway → hub Firewall → Traefik internal load balancer of the zone in the **active** cell |
 | Other Azure workloads (other spokes) | Same internal entry point as the corporate network | Same as above; a Firewall rule per source |
 | Applications in the same zone and cell | Kubernetes Service (`<app>.<zone>-<app>.svc`) | Stays inside the cell and its availability zone; never goes through the traffic layer or to another cell |
 | Applications in another zone | Not allowed (R5). If a business flow needs it, the caller is treated like any other client: it goes through the target zone's entry point and needs an explicit Firewall rule | – |
 
-**Recommendation: active-active cells with client-IP affinity.** All cells carry traffic all the time, and every
-client is mapped to one cell **by its IP address**, so it keeps using the same cell across requests, TLS sessions
-and reconnects – also clients that do not support cookies (API clients, mobile apps, other systems):
+**The client's TLS session ends at the traffic layer**, not in a cell. Front Door and Application Gateway terminate
+the client's TLS (and run the WAF), then open their own TLS connections to the Traefik gateways and choose the cell
+**per HTTP request**. Neither keeps state about the client: sessions and caches belong in Azure PaaS (e.g. Azure
+Cache for Redis) or in the token, so a client can be moved to another cell at any time without losing anything.
+What the cell choice controls is **which application version** a client sees while a release moves through the cells
+one by one ([releases cell by cell](11-zero-downtime-application-upgrades.md#releases-cell-by-cell)).
 
-- **The client's TLS session ends at the traffic layer**, not in a cell. Front Door and NGINX terminate the client's
-  TLS (and run the WAF), then open their own TLS connections to the Traefik gateways and choose the cell **per HTTP
-  request**. TLS therefore does not keep a client on one cell; the client-IP mapping does.
-- **The affinity exists for consistent versions, not for state.** Cells hold no session state: sessions and caches
-  belong in Azure PaaS (e.g. Azure Cache for Redis) or in the token, so a client can be moved to another cell at any
-  time without losing anything. Affinity only makes sure that a client sees **one application version at a time**
-  while a release moves through the cells one by one ([releases cell by cell](11-zero-downtime-application-upgrades.md#releases-cell-by-cell)).
-- **Why not cookies:** cookie affinity (the only affinity Front Door and Application Gateway offer built in) works
-  only for clients that keep cookies, and some clients will not.
+### External zones: active-active with client-IP affinity
+
+All cells carry external traffic all the time, and every client is mapped to one cell **by its IP address**, so it
+keeps using the same cell across requests, TLS sessions and reconnects – also clients that do not support cookies
+(API clients, mobile apps, other systems):
+
+- **The affinity exists for consistent versions, not for state.** It makes sure that a client sees **one
+  application version at a time** during a release.
+- **Why not cookies:** cookie affinity (the only affinity Front Door offers built in) works only for clients that
+  keep cookies, and some clients will not.
 - **A failed or drained cell moves its clients** to another cell, and they come back when it returns. The mapping is
   deterministic, so every request of a client lands on the same cell again.
 - **All cells always prove that they work.** A cluster that only receives traffic in a failure is a cold standby
@@ -90,35 +103,65 @@ and reconnects – also clients that do not support cookies (API clients, mobile
   connection. Applications that use them must reconnect with back-off, because draining a cell closes them after the
   drain timeout.
 
-How the client IP is mapped to a cell:
+How Front Door maps the client IP to a cell:
 
-| | Front Door (external) | NGINXaaS (internal) |
-|---|---|---|
-| Mapping | Rule set per zone: the IPv4 and IPv6 address space is split into blocks (e.g. 16 per family), and each block is assigned to a cell with a rule *socket address in &lt;blocks&gt; → route configuration override: origin group of that cell*. Blocks are assigned by measured traffic so that the cells get similar load | `hash $client_prefix consistent` over the cells' Traefik IPs, where `$client_prefix` is the client's `/24` (IPv4) or `/64` (IPv6), so that a client whose address changes within its network stays in its cell |
-| Client IP used | *Socket address* (the address that connected to Front Door), not `X-Forwarded-For`, which a client could forge | `$remote_addr`. The hub Firewall must not SNAT this flow: it is allowed with network rules (no SNAT to private destinations); application rules would SNAT |
-| Origins / backends | One origin group per cell and zone: the cell's own origin at priority 1, the other cells at priorities 2 and 3 in the fixed order `az1` → `az2` → `az3`, so the clients of a failed cell all move to the same cell | One upstream per zone with all cells |
-| Health probe | HTTPS `GET` to the zone's Traefik health route, which answers only when Traefik and its routes are ready | Same, as an NGINX Plus active health check |
-| Take a cell out | Disable the cell's origin: its clients go to the next cell of their origin group | Mark the cell's server `down` in the configuration: consistent hashing moves only that cell's clients; existing connections finish within `worker_shutdown_timeout` (e.g. 300 s) |
-| Return a cell | Enable the origin; in steps if wanted, by re-mapping the cell's blocks back a quarter at a time | Remove `down`: the cell gets back exactly the clients it had before |
+| | Front Door (external zones) |
+|---|---|
+| Mapping | Rule set per zone: the IPv4 and IPv6 address space is split into blocks (e.g. 16 per family), and each block is assigned to a cell with a rule *socket address in &lt;blocks&gt; → route configuration override: origin group of that cell*. Blocks are assigned by measured traffic so that the cells get similar load |
+| Client IP used | *Socket address* (the address that connected to Front Door), not `X-Forwarded-For`, which a client could forge |
+| Origins | One origin group per cell and zone: the cell's own origin at priority 1, the other cells at priorities 2 and 3 in the fixed order `az1` → `az2` → `az3`, so the clients of a failed cell all move to the same cell |
+| Health probe | HTTPS `GET` to the zone's Traefik health route, which answers only when Traefik and its routes are ready |
+| Take a cell out | Disable the cell's origin: its clients go to the next cell of their origin group |
+| Return a cell | Enable the origin; in steps if wanted, by re-mapping the cell's blocks back a quarter at a time |
 
 Limits of client-IP affinity, accepted in this design:
 
-- **NAT**: all users behind one address (a corporate proxy, a carrier-grade NAT) land on the same cell, so the load
-  is less even than with cookies. The cells are sized N+1 anyway; the Front Door block assignment is rebalanced from
-  the access logs when needed (outside releases, because it moves clients).
+- **NAT**: all users behind one address (a carrier-grade NAT, a partner's proxy) land on the same cell, so the load
+  is less even than with cookies. The cells are sized N+1 anyway; the block assignment is rebalanced from the access
+  logs when needed (outside releases, because it moves clients).
 - **Changing addresses**: a mobile client that switches networks may change cells. During a release it can then see
   the other version, which the [compatibility rule](11-zero-downtime-application-upgrades.md) covers.
-- **Real client IP for the applications**: the cells see the traffic layer's addresses; the client IP is in
-  `X-Forwarded-For`, which Traefik accepts only from the traffic layer's addresses (`forwardedHeaders.trustedIPs`).
+
+### Internal zones: one active cell
+
+Every internal zone's Application Gateway has **one backend pool per cell** (the Traefik internal load balancer IP of
+the zone in that cell). The routing rule of the zone's wildcard listener points to the pool of the **active cell**;
+the other pools are used only by the per-cell test host names (below). Which cell is active is one IaC variable per
+environment, `internal_active_cell`, so all internal zones of an environment switch together.
+
+- **No affinity needed.** Only one cell serves internal clients, so they see one application version at a time
+  without any client mapping – apart from the few minutes of a rolling update inside the cell, which the
+  [compatibility rule](11-zero-downtime-application-upgrades.md) covers anyway.
+- **Planned switch** (releases, cluster upgrades): the switch pipeline pre-scales the standby cell, runs the smoke
+  tests through its test host names, points the routing rule to the standby cell's pool and waits for the
+  Application Gateway **connection draining** timeout (e.g. 300 s) so that in-flight requests on the old cell finish.
+  It is zero-downtime; long-lived connections reconnect.
+- **Unplanned switch** (cell or AZ failure): an Azure Monitor alert on the Application Gateway backend health of the
+  active pool dispatches the same switch pipeline (a safe action, [section 15](15-ai-driven-day-2-operations.md#safe-actions-without-a-pull-request)),
+  which skips the pre-scale wait if the active cell is gone. Internal applications are unavailable from the failure
+  until the switch completes.
+- **The standby cell stays warm and proven.** It runs every application with the same `minReplicas` and receives
+  continuous synthetic traffic through its test host names, so a failing standby alerts before it is needed. It is
+  sized like every cell to carry 100 % of the load (N+1), the same as for active-active.
+- **The active cell is never changed in place.** A release or cluster upgrade of the active cell is always preceded by
+  a planned switch, so internal clients never hit a cell that is being changed.
+- **Client IP**: Application Gateway passes it to Traefik in `X-Forwarded-For`. The hub Firewall allows the flow
+  corporate network → Application Gateway with network rules (no SNAT to private destinations), so that the WAF and
+  the logs see the real client address.
+
+### Common to both
+
+**Real client IP for the applications**: the cells see the traffic layer's addresses; the client IP is in
+`X-Forwarded-For`, which Traefik accepts only from the traffic layer's addresses (`forwardedHeaders.trustedIPs`).
 
 Every Traefik gateway also answers to a **per-cell test host name** (e.g. `*.sl-az1.int-fi.prd.example.com`),
-published through the zone's entry point to that cell only: an NGINX `server` block with the cell as the only
-backend, or a Front Door route to the cell's origin group whose WAF policy admits only the pipeline's egress IPs. The
-release and upgrade pipelines run their smoke and synthetic tests through the real WAF and TLS path before the cell
-gets user traffic back ([releases](11-zero-downtime-application-upgrades.md#releases-cell-by-cell), [section 12](12-zero-downtime-cluster-upgrades.md#stateless-clusters)).
+published through the zone's entry point to that cell only: an Application Gateway listener with that cell's pool
+as the only backend, or a Front Door route to the cell's origin group whose WAF policy admits only the pipeline's
+egress IPs. The release and upgrade pipelines run their smoke and synthetic tests through the real WAF and TLS path
+before the cell gets user traffic ([releases](11-zero-downtime-application-upgrades.md#releases-cell-by-cell), [section 12](12-zero-downtime-cluster-upgrades.md#stateless-clusters)).
 
-The NGINXaaS deployments live in a separate **edge VNet** per environment (`vnet-<env>-edge`), peered to the hub. Each
-internal zone's deployment is in its own delegated subnet inside the zone's address space
+The Application Gateways live in a separate **edge VNet** per environment (`vnet-<env>-edge`), peered to the hub.
+Each internal zone's gateway is in its own dedicated subnet inside the zone's address space
 ([address plan](#vnets-and-address-plan)), so the Firewall rule "edge `int-fi` → cells `int-fi`" is again expressed
 with zone prefixes, and a UDR sends the cell prefixes → Firewall. External zones need no subnet there, because Front
 Door is a global service that reaches the cells through Private Link: the Traefik `Service` in `<zone>-gateway`
@@ -165,7 +208,7 @@ Layout of one zone, prd `int-fi` `10.49.0.0/17` (`ext-fi` is the same from `10.4
 | `10.49.0.0/20` | `int-fi` in `sl-az1` | `vnet-prd-sl-az1` |
 | `10.49.16.0/20` | `int-fi` in `sl-az2` | `vnet-prd-sl-az2` |
 | `10.49.32.0/20` | `int-fi` in `sl-az3` (optional) | `vnet-prd-sl-az3` |
-| `10.49.48.0/20` | `int-fi` internal entry point, NGINXaaS ([incoming traffic](#incoming-traffic-from-outside-and-from-inside)); unused in external zones | `vnet-prd-edge` |
+| `10.49.48.0/20` | `int-fi` internal entry point, Application Gateway ([incoming traffic](#incoming-traffic-from-outside-and-from-inside)); unused in external zones | `vnet-prd-edge` |
 | `10.49.64.0/20` | `int-fi` in the stateful cluster | `vnet-prd-sf` |
 | `10.49.80.0/20` – `10.49.112.0/20` | Reserve: more pod IPs for the stateful cluster (added as another address space) | `vnet-prd-sf` |
 
@@ -215,7 +258,8 @@ dev → acc → prd, and the existing zones only get new routes and Firewall rul
    `extxxz1`–`z3` (`--vnet-subnet-id`, `--pod-subnet-id`, fixed node count). Neither restarts existing nodes.
 7. **Policies and Git:** the zone's Azure Policy mutation and validation, Traefik gateway and namespaces through
    Flux and the stateful pipeline.
-8. **Traffic layer:** the internal zone's NGINXaaS deployment in the edge VNet and the external zone's WAF policy,
+8. **Traffic layer:** the internal zone's Application Gateway (subnet, WAF policy, one backend pool per cell, routing to
+   the active cell) in the edge VNet and the external zone's WAF policy,
    origin groups, Private Link origins and IP-block rule set in Front Door; approve the Private Link connections. Existing zones' entry
    points do not change.
 

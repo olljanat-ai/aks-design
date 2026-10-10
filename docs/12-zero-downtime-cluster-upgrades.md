@@ -71,15 +71,17 @@ changed. It is the same procedure as an application release ([releases cell by c
 two never run in the same cell at the same time:
 
 1. pre-scale the remaining cluster(s) to full-load capacity;
-2. take the cell out of the traffic layer (disable its Front Door origins, mark it `down` in the NGINXaaS upstreams)
-   and wait for connection draining;
+2. take the cell out of the traffic layer and wait for connection draining: disable its Front Door origins, and – if
+   it is the internal active cell – first switch internal zones to the standby cell with the planned switch
+   ([internal zones](08-cluster-types-stateless-and-stateful.md#internal-zones-one-active-cell));
 3. upgrade the control plane and the system pool; NAP then replaces the zone nodes with the new node image and
    version through drift (the cell's `NodePool` disruption budgets are opened for this while it is out of traffic) – or, for large changes (new VNet, CNI, OS SKU), **create a fresh cluster**
    from IaC and let Flux bootstrap it (blue/green at cluster level);
 4. wait until all Flux Kustomizations are `Ready`, run smoke and synthetic tests through the cell's per-cell test
    host names ([incoming traffic](08-cluster-types-stateless-and-stateful.md#incoming-traffic-from-outside-and-from-inside));
-5. return the cell's clients while watching error-rate and latency SLOs – on Front Door in steps of IP blocks, on
-   NGINXaaS in one step; on breach take the cell out again and stop;
+5. return the cell's external clients on Front Door in steps of IP blocks while watching error-rate and latency
+   SLOs; on breach take the cell out again and stop. The cell comes back as the internal standby; internal traffic
+   is not switched back to it, so the active cell changes only when needed;
 6. repeat for the next cell.
 
 Node image / OS security updates follow the same timetable ([update policy](#update-policy)) and the same
