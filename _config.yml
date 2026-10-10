@@ -1,4 +1,7 @@
 title: aks-design
+# Used by the "Edit this page" links.
+repository: olljanat-ai/aks-design
+branch: main
 # Only publish the design document and its pictures.
 exclude:
   - diagrams
