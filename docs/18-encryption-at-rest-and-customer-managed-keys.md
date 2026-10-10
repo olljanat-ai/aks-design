@@ -66,10 +66,9 @@ zone the same way ([open questions](open-questions.md)).
   `security.encryptionAtHost: true` in every `AKSNodeClass`), so temp disks and disk caches on the VM host are
   encrypted as well. Azure Policy enforces it like the VM size allow-list. The allow-list may therefore contain only
   SKUs that support **both** VNet encryption and encryption at host ([section 4](04-node-pools.md)).
-- Because the setting only exists at cluster creation, **turning CMK on is a rebuild**. For the stateless clusters
-  that is the normal drain-and-rebuild path ([section 12](12-zero-downtime-cluster-upgrades.md#stateless-clusters)).
-  The stateful cluster gets it from day one, because it is built only when the first workload is approved
-  ([section 8](08-cluster-types-stateless-and-stateful.md)).
+- The disk encryption set can only be set when a cluster is created, so **every cluster is created with CMK from the
+  start** by the cluster module. The cluster module must never create a cluster without it, because adding it later
+  would mean rebuilding the cluster.
 
 ## Stateful cluster: a key per isolation zone for persistent volumes
 
