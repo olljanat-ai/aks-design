@@ -35,13 +35,14 @@ Limits of the add-on and how the design handles them:
 | Policy | All clusters | Stateless | Stateful |
 |---|---|---|---|
 | Namespace `<zone>-*` has label `platform/zone=<zone>`; pod nodeSelector / toleration match the prefix (mutation + validation) | ✔ | | |
+| `platform/arch` / `platform/capacity` labels: inject the architecture `nodeSelector` and the spot toleration + preferred affinity (mutation); reject unknown values, own `kubernetes.io/arch` / `karpenter.sh/capacity-type` selectors and spot tolerations without the label ([section 4](04-node-pools.md#cpu-architecture-and-spot-chosen-by-the-application)) | ✔ | all values | defaults only (`amd64`, `on-demand`) |
 | Images by digest from the environment's ACR only | ✔ | | |
 | ServiceAccount used by application pods carries the workload identity client ID; no `imagePullSecrets` | ✔ | | |
 | No `Opaque` / basic-auth / docker-config `Secret`s in application namespaces (Helm release secrets allowed); `secretObjects` in `SecretProviderClass` only for the `kubernetes.io/tls` certificate in `<zone>-gateway` | ✔ | | |
 | Requests set, probes set, no privileged / hostNetwork / hostPath for applications | ✔ | | |
 | Replica and rollout guardrails (PDB existence: CI check) of [section 11](11-zero-downtime-application-upgrades.md) | ✔ | ≥ 2 replicas | ≥ 3 replicas, zone spread |
 | Reject `PersistentVolumeClaim` | | ✔ | |
-| NAP `NodePool` / `AKSNodeClass`: subnet, `platform/zone` label, taint and AZ of its zone; only allowed VNet-encryption-capable VM sizes | | ✔ | |
+| NAP `NodePool` / `AKSNodeClass`: subnet, `platform/zone` label, taint and AZ of its zone; only allowed VNet-encryption-capable VM sizes (amd64 and arm64); a spot `NodePool` must carry the `platform/capacity=spot:NoSchedule` taint | | ✔ | |
 | Reject `Ingress`; only HTTPS `Gateway` listeners; `HTTPRoute` only to the zone's HTTPS listener and zone domain | | ✔ | |
 | Reject `LoadBalancer` / `NodePort` Services outside `<zone>-gateway` | | ✔ | |
 | Reject `Ingress`, `Gateway`, `HTTPRoute`; `LoadBalancer` only internal, in the zone's ILB subnet, `externalTrafficPolicy: Local`; no `NodePort` | | | ✔ |

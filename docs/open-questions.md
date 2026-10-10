@@ -16,6 +16,11 @@
 - Node auto provisioning in the stateless clusters: confirm that NAP with custom subnets per `NodePool` is supported
   (and generally available) in our region together with a private cluster, API Server VNet Integration, outbound type
   `userDefinedRouting` and the Azure Policy add-on. Fallback: classic node pools per zone with the cluster autoscaler.
+- arm64 and spot in the stateless clusters: confirm that NAP offers spot and arm64 SKUs together with custom subnets
+  per `NodePool`, which arm64 families (Dpsv6/Epsv6, Cobalt 100) support Azure Virtual Network encryption in our
+  region, and that the Azure Policy mutations can match on pod labels (`platform/arch`, `platform/capacity`). If an
+  architecture has no VNet-encryption-capable SKU, it cannot be offered. How large a share of a zone may run on spot
+  (spot `NodePool` limits), and is spot allowed in prd for all zones?
 - In-place OS patching of the stateful cluster (node OS channel `Unmanaged`) needs the OS package repositories, but
   the cluster is network isolated: is a private package mirror in the backend network acceptable, and is the channel
   supported for network isolated clusters? If not, the fallback is node OS channel `SecurityPatch` (security-only node

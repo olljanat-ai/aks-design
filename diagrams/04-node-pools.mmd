@@ -15,10 +15,10 @@ flowchart TB
     subgraph POOLS["Zone nodes (one AKS cluster) – every zone: label + taint platform/zone=&lt;zone&gt;:NoSchedule, own subnet"]
         direction LR
         p_sys["system (classic node pool)<br/>subnet: snet-system-*<br/>taint: CriticalAddonsOnly<br/>fixed node count"]
-        p_ifi["int-fi<br/>subnet: snet-int-fi-*<br/>stateless: NAP NodePool intfi<br/>stateful: pools intfiz1–z3"]
-        p_ise["int-se<br/>subnet: snet-int-se-*<br/>stateless: NAP NodePool intse<br/>stateful: pools intsez1–z3"]
-        p_efi["ext-fi<br/>subnet: snet-ext-fi-*<br/>stateless: NAP NodePool extfi<br/>stateful: pools extfiz1–z3"]
-        p_ese["ext-se<br/>subnet: snet-ext-se-*<br/>stateless: NAP NodePool extse<br/>stateful: pools extsez1–z3"]
+        p_ifi["int-fi<br/>subnet: snet-int-fi-*<br/>stateless: NAP NodePools intfi + intfispot<br/>stateful: pools intfiz1–z3"]
+        p_ise["int-se<br/>subnet: snet-int-se-*<br/>stateless: NAP NodePools intse + intsespot<br/>stateful: pools intsez1–z3"]
+        p_efi["ext-fi<br/>subnet: snet-ext-fi-*<br/>stateless: NAP NodePools extfi + extfispot<br/>stateful: pools extfiz1–z3"]
+        p_ese["ext-se<br/>subnet: snet-ext-se-*<br/>stateless: NAP NodePools extse + extsespot<br/>stateful: pools extsez1–z3"]
     end
 
     adm -.->|"enforced on every<br/>pod create/update"| NS
@@ -31,8 +31,10 @@ flowchart TB
     ds["Platform DaemonSets<br/>(Cilium, CSI, monitoring agent)<br/>tolerate all zones"]
     ds -.->|"runs on every node"| POOLS
 
-    nap["Stateless clusters: node auto provisioning (Karpenter)<br/>NodePool + AKSNodeClass per zone (Flux): zone subnet, cell's AZ,<br/>allow-list of VNet-encryption-capable SKUs, limits sized for N+1<br/>nodes created for pending pods, consolidated when under-used"]
-    fix["Stateful cluster: classic node pools per zone and AZ (IaC)<br/>fixed VM size and node count – no autoscaling<br/>nodes change only in planned upgrades"]
+    nap["Stateless clusters: node auto provisioning (Karpenter)<br/>NodePool + AKSNodeClass per zone (Flux): zone subnet, cell's AZ,<br/>allow-list of VNet-encryption-capable SKUs (amd64 + arm64)<br/>on-demand NodePool limits sized for N+1; spot NodePool tainted, higher weight, falls back to on-demand<br/>nodes created for pending pods, consolidated when under-used"]
+    choice["Chosen by the application (pod labels, mutated into node selection)<br/>platform/arch: amd64 (default) | arm64 | multi<br/>platform/capacity: on-demand (default) | spot"]
+    choice -.->|"stateless clusters"| adm
+    fix["Stateful cluster: classic node pools per zone and AZ (IaC)<br/>fixed VM size and node count – no autoscaling<br/>amd64, on-demand only<br/>nodes change only in planned upgrades"]
     nap -.-> POOLS
     fix -.-> POOLS
 
@@ -45,6 +47,6 @@ flowchart TB
     class p_sys,ns_sys,ds cp
     class p_ifi,p_ise,ns_ifi,ns_ise int
     class p_efi,p_ese,ns_efi,ns_ese ext
-    class adm note
+    class adm,choice note
     class nap sl
     class fix sf

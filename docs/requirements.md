@@ -23,15 +23,16 @@
 | R14 | One policy engine | Azure Policy add-on for AKS in every cluster, assigned per environment subscription; the same Azure Policy also governs the Azure resources ([section 14](14-policy-enforcement.md)) |
 | R15 | Certificates distributed through Key Vault, shared by all clusters | One shared **platform Key Vault per environment** (`kv-<env>-platform`) holds all certificates of that environment; a renewal job per environment issues one certificate per zone into it, and all clusters of the environment read it with plain Azure RBAC scoped to the individual certificate ([section 13](13-encryption-in-transit-and-tls.md#certificates-issued-centrally-distributed-through-the-platform-key-vault)) |
 | R16 | Countries can be added online | One address space per zone in every cluster VNet, taken from a per-country prefix; a new country adds address spaces, subnets and NAP `NodePool`s / node pools; existing zones only get new routes and Firewall rules ([VNets and address plan](08-cluster-types-stateless-and-stateful.md#vnets-and-address-plan)) |
+| R17 | Cost-optimised compute: applications choose amd64 or arm64 and on-demand or spot nodes, the platform supports all of them | Stateless clusters: pod labels `platform/arch` (`amd64` / `arm64` / `multi`) and `platform/capacity` (`on-demand` / `spot`), turned into node selection by Azure Policy mutation; per zone an on-demand and a tainted spot NAP `NodePool` with amd64 + arm64 SKUs and fallback to on-demand; defaults amd64 on-demand; stateful cluster on-demand amd64 only ([section 4](04-node-pools.md#cpu-architecture-and-spot-chosen-by-the-application)) |
 
 **Isolation zone** = one *type* = one combination of exposure × country:
 
 | Zone | Exposure | Country | NAP `NodePool` (stateless) | Node pools (stateful) | Key Vault (one per environment) | Subnets |
 |---|---|---|---|---|---|---|
-| `int-fi` | internal | FI | `intfi` | `intfiz1`–`z3` | `kv-<env>-int-fi` | `snet-int-fi-*` |
-| `int-se` | internal | SE | `intse` | `intsez1`–`z3` | `kv-<env>-int-se` | `snet-int-se-*` |
-| `ext-fi` | external | FI | `extfi` | `extfiz1`–`z3` | `kv-<env>-ext-fi` | `snet-ext-fi-*` |
-| `ext-se` | external | SE | `extse` | `extsez1`–`z3` | `kv-<env>-ext-se` | `snet-ext-se-*` |
+| `int-fi` | internal | FI | `intfi`, `intfispot` | `intfiz1`–`z3` | `kv-<env>-int-fi` | `snet-int-fi-*` |
+| `int-se` | internal | SE | `intse`, `intsespot` | `intsez1`–`z3` | `kv-<env>-int-se` | `snet-int-se-*` |
+| `ext-fi` | external | FI | `extfi`, `extfispot` | `extfiz1`–`z3` | `kv-<env>-ext-fi` | `snet-ext-fi-*` |
+| `ext-se` | external | SE | `extse`, `extsespot` | `extsez1`–`z3` | `kv-<env>-ext-se` | `snet-ext-se-*` |
 
 Adding a country adds two zones (`int-xx`, `ext-xx`) following the same pattern, online ([adding a country](08-cluster-types-stateless-and-stateful.md#adding-a-country-online)).
 
