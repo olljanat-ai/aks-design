@@ -106,7 +106,7 @@ environments:
       maxSpotShare: 0.5
     allowedVmSizes: [Standard_D4ads_v6, Standard_D8ads_v6, Standard_D4pds_v6, Standard_D8pds_v6]
 kubernetes:
-  allowedMinors: { stateless: ["1.33", "1.34"], stateful: ["1.32"] }   # filled by the upgrade agent's PR, approved per tier
+  allowedMinors: { stateless: ["1.33", "1.34"], stateful: ["1.34"] }   # filled by the upgrade agent's PR, approved per tier
 forbidden:
   - action: delete
     types: [Microsoft.KeyVault/vaults, Microsoft.ContainerRegistry/registries, Microsoft.Storage/storageAccounts, Microsoft.Sql/servers]

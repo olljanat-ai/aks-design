@@ -56,8 +56,7 @@
 - eBPF host routing: confirm with Microsoft that it is supported together with Azure Virtual Network encryption,
   node auto provisioning, API Server VNet Integration, outbound type `userDefinedRouting` and – for the stateful
   cluster – network isolated clusters, Azure CNI with a pod subnet and LTS; and that every platform DaemonSet
-  (monitoring agent, Defender sensor, CSI drivers) works without host iptables rules. Which LTS minor ≥ 1.33 will the
-  stateful cluster move to, and when?
+  (monitoring agent, Defender sensor, CSI drivers) works without host iptables rules.
 - FQDN egress: is the ACNS FQDN-filtering throughput (~1 000 DNS-proxied requests per second per pod) enough for the
   busiest applications, or do some need a documented exception? Do applications accept declaring Entra ID and their
   zone Key Vault themselves (current draft, via presets), or should the platform baseline allow them for every
