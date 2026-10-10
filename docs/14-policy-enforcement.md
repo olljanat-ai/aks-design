@@ -50,4 +50,4 @@ Limits of the add-on and how the design handles them:
 
 ---
 
-[Back to contents](../README.md) · Previous: [13. Encryption in transit and TLS](13-encryption-in-transit-and-tls.md) · Next: [Open questions](open-questions.md)
+[Back to contents](../README.md) · Previous: [13. Encryption in transit and TLS](13-encryption-in-transit-and-tls.md) · Next: [15. AI-driven day 2 operations](15-ai-driven-day-2-operations.md)

@@ -1,0 +1,78 @@
+%% AI-driven day 2 operations: agents observe with read-only identities and change the platform only through pull requests.
+%% Human-owned guardrails decide which pull requests may merge; only the existing deployment identities write to Azure and the clusters.
+flowchart LR
+    subgraph SIG["Signals (read-only)"]
+        direction TB
+        s_mon["Azure Monitor · Managed Prometheus<br/>Flux status · pipeline runs"]
+        s_sec["Defender for Cloud · Azure Policy compliance<br/>Key Vault expiry events"]
+        s_cost["Cost Management · quotas"]
+        s_rel["AKS releases · node images<br/>deprecated APIs"]
+        s_req["Requests from application teams<br/>(issue templates)"]
+    end
+
+    subgraph AG["Agent runtime – management VNet, one managed identity per agent and environment"]
+        direction TB
+        a_obs["Operations agent<br/>triage · diagnosis · verification"]
+        a_chg["Change agents<br/>platform · upgrade · capacity & cost ·<br/>security · onboarding"]
+        a_rev["Reviewer agent<br/>separate context, never the author"]
+    end
+
+    subgraph GR["Guardrails repository – humans only"]
+        direction TB
+        g_lim["limits.yaml · change windows<br/>risk tiers · CODEOWNERS"]
+        g_pol["Plan and manifest policies<br/>(OPA / Conftest)"]
+        g_gate["Merge gate<br/>required workflow from the org ruleset"]
+    end
+
+    subgraph REPO["Pull request to the IaC or fleet repository"]
+        direction TB
+        pr["agent/* branch → PR<br/>intent · evidence · plan · rollback"]
+        tier{"Risk tier computed<br/>from the plan,<br/>not from the agent"}
+        t_low["Low: checks + reviewer agent<br/>→ auto-merge"]
+        t_med["Medium: + 1 human approval"]
+        t_high["High: + 2 humans<br/>(platform + security)"]
+    end
+
+    rb["Runbooks repository – humans only<br/>pre-approved safe actions:<br/>halt release · drain one cell ·<br/>roll back to previous tag"]
+
+    subgraph DEP["Existing delivery – the only write path"]
+        direction TB
+        main["main"]
+        pipe["IaC pipelines · fleet CI → Flux<br/>stateful pipeline<br/>deployment identities, federated to<br/>protected main + environment"]
+    end
+
+    subgraph RT["Runtime guardrails"]
+        direction TB
+        clu["Clusters and Azure resources<br/>Azure Policy deny · Azure RBAC ·<br/>cell by cell · SLO gates · budgets"]
+    end
+
+    s_mon & s_sec & s_cost & s_rel & s_req --> a_obs
+    a_obs -->|"task"| a_chg
+    a_obs -.->|"dispatch (rate limited)"| rb
+    a_chg -->|"opens"| pr
+    a_rev -->|"review"| pr
+    pr --> tier
+    tier --> t_low & t_med & t_high
+    g_lim & g_pol --> g_gate
+    g_gate -->|"required check"| tier
+    t_low & t_med & t_high -->|"merge"| main
+    main --> pipe -->|"apply"| clu
+    rb -->|"same pipelines"| pipe
+    clu -->|"health · drift · compliance"| s_mon
+
+    no["No agent identity has write access to<br/>Azure, Kubernetes, Key Vault secrets,<br/>main or the guardrails"]
+    a_chg -.-x|"blocked"| clu
+    no -.- AG
+
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
+    classDef idn fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef paas fill:#eceff1,stroke:#455a64,color:#000
+    classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
+    classDef blocked fill:#ffebee,stroke:#c62828,color:#000,stroke-dasharray: 5 5
+    class s_mon,s_sec,s_cost,s_rel,s_req paas
+    class a_obs,a_chg,a_rev hub
+    class g_lim,g_pol,g_gate,tier,t_low,t_med,t_high,rb note
+    class pr,main,pipe idn
+    class clu sl
+    class no blocked

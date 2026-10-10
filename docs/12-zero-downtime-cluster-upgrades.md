@@ -30,7 +30,7 @@ version).
 
 **How the stateless timetable is run.** A scheduled **version pipeline** reads the Kubernetes versions and node images
 AKS offers in the region and the date each was released, computes the target version and node image of every
-stateless cluster from the table above, and commits it to the IaC repository. The cluster upgrade pipeline then
+stateless cluster from the table above, and the upgrade agent ([section 15](15-ai-driven-day-2-operations.md#agents)) opens it as a pull request to the IaC repository with a compatibility report. The cluster upgrade pipeline then
 applies it cell by cell with the drain procedure below; dev and acc run without approval, prd needs an approval only
 for minor upgrades. Rules:
 
