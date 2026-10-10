@@ -46,9 +46,9 @@ application's policy (application team) and, if the zone does not have it yet, t
 |---|---|---|
 | Dataplane | `--network-plugin azure --network-plugin-mode overlay --network-dataplane cilium` | `--network-plugin azure --network-dataplane cilium` + pod subnet (dynamic allocation) |
 | ACNS | `--enable-acns` (observability + security) | `--enable-acns` (observability + security) |
-| eBPF host routing | `--acns-datapath-acceleration-mode BpfVeth` | `BpfVeth` once the LTS minor is **1.33 or later**; `None` until then ([below](#stateful-cluster-and-lts)) |
+| eBPF host routing | `--acns-datapath-acceleration-mode BpfVeth` | `--acns-datapath-acceleration-mode BpfVeth` |
 | Node OS | Azure Linux 3.0 – system pool `--os-sku AzureLinux`, NAP `AKSNodeClass` `imageFamily: AzureLinux` | Azure Linux 3.0 – all node pools `--os-sku AzureLinux` |
-| Kubernetes | ≥ 1.33 (N-1 / N-2 already are) | LTS minor, see below |
+| Kubernetes | ≥ 1.33 (N-1 / N-2 already are) | ≥ 1.33: created on the second latest GA minor (N-1) and kept there with LTS, see below |
 
 eBPF host routing requires Kubernetes 1.33 or later, Ubuntu 24.04 or Azure Linux 3.0 on **every** node of the cluster
 (it is all or nothing), and no iptables rules in the node's network namespace. Azure Linux 3.0 is chosen because it
@@ -77,11 +77,12 @@ What eBPF host routing changes for the rest of the design:
 
 ### Stateful cluster and LTS
 
-FQDN filtering needs only Kubernetes 1.29, so the stateful cluster enforces the same egress rule from the start.
-eBPF host routing needs 1.33: the stateful cluster turns it on at its first LTS minor upgrade to 1.33 or later
-(procedure of [section 12](12-zero-downtime-cluster-upgrades.md#stateful-cluster), one AZ at a time), not earlier –
-the update policy keeps it on its LTS minor, and a performance feature is not a reason to change that. Until then the
-fleet runs with mixed acceleration modes, which is invisible to applications.
+The stateful cluster is created on the **second latest GA minor** (N-1, the same minor as `sl-az1`) and then stays on
+it with Long Term Support ([update policy](12-zero-downtime-cluster-upgrades.md#update-policy)); its slower upgrade
+cycle exists because of the more demanding workloads it runs, not because it starts on an old version. It therefore
+meets the 1.33 requirement from day one and runs the same ACNS settings as the stateless clusters – eBPF host routing
+and FQDN filtering (which needs only 1.29) – so the whole fleet has one datapath. Its later LTS minor upgrades only
+move it forward, so the requirement stays met.
 
 ## How an application declares its egress
 

@@ -10,11 +10,13 @@ hand.
 
 The two cluster types are updated at very different speeds, for the same reason they are built differently: a
 stateless cell can be drained and replaced at any time, the stateful cluster holds data and is changed as rarely as
-possible.
+possible. The difference is the upgrade *cycle*, not the starting point: the stateful cluster starts on the same
+second latest minor as `sl-az1`, and then moves slowly because the workloads it runs (databases, brokers, operators
+with data on disks) are harder to move and test.
 
 | | Stateless, fast speed: `sl-az1` | Stateless, slow speed: `sl-az2` (and `sl-az3`) | Stateful: `sf` |
 |---|---|---|---|
-| Kubernetes minor | **N-1**: the second latest GA minor in AKS | **One minor behind `sl-az1`** (N-2) – always a minor that `sl-az1` has already run in prd | **LTS minor**, kept as long as it has Long Term Support |
+| Kubernetes minor | **N-1**: the second latest GA minor in AKS | **One minor behind `sl-az1`** (N-2) – always a minor that `sl-az1` has already run in prd | **N-1 when the cluster is created** (the same minor as `sl-az1`), then kept on that minor as long as it has Long Term Support |
 | Patches (Kubernetes patch versions, node images) | dev **1 week** after AKS releases them, acc 1 week after dev, prd 1 week after acc (prd ≈ 3 weeks after release) | dev **1 month** after release, acc 1 month after dev, prd 1 month after acc (prd ≈ 3 months after release) | **Only when absolutely necessary** (see below) |
 | Minor upgrades | When a new minor becomes GA, to the new N-1, with the same 1-week steps | To the minor `sl-az1` leaves, with the same 1-month steps | Within the **last 6 months of LTS support** of the current minor: dev first, then acc, then prd |
 | How nodes are updated | Cell drained, control plane + system pool upgraded, NAP replaces the zone nodes ([below](#stateless-clusters)) | Same | **Patched in place** where possible; nodes replaced only when a change requires it ([below](#stateful-cluster)) |
@@ -93,7 +95,7 @@ cluster to carry the whole environment.
 
 There is only one stateful cluster, so it is upgraded **in place** and protected by zone redundancy:
 
-- **Version policy**: LTS minor version, changed only when absolutely necessary ([update policy](#update-policy)).
+- **Version policy**: created on the second latest GA minor (N-1) with LTS, then changed only when absolutely necessary ([update policy](#update-policy)).
   Cluster auto-upgrade channel `none`; Kubernetes patch versions are applied only for one of the listed reasons, by the
   pipeline, dev → acc → prd, preferably control plane only.
 - **OS patches in place**: security patches are applied to the **existing nodes** instead of replacing them – node OS

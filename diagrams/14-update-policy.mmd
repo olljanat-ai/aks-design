@@ -19,10 +19,10 @@ flowchart LR
         s_dev --> s_acc --> s_prd
     end
 
-    subgraph SF["Stateful – sf · LTS minor"]
+    subgraph SF["Stateful – sf · created on N-1, then LTS"]
         direction TB
         sf_rule["Only when absolutely necessary:<br/>security, bug, AKS supportability<br/>patch existing nodes in place first,<br/>control plane only before node replacement"]
-        sf_lts["Same LTS minor kept as long as possible;<br/>upgrade to the next LTS minor within the<br/>last 6 months of LTS support, dev → acc → prd"]
+        sf_lts["Created on the second latest GA minor (N-1);<br/>that minor kept with LTS as long as possible;<br/>upgrade to the next LTS minor within the<br/>last 6 months of LTS support, dev → acc → prd"]
     end
 
     rel ==> f_dev
