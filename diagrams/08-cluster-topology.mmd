@@ -4,10 +4,10 @@ flowchart TB
     internet(("Internet"))
     corp["Corporate network<br/>(via hub Firewall)"]
 
-    subgraph EDGE["Traffic layer = cell router – one entry point per zone"]
+    subgraph EDGE["Entry points – outside the cells"]
         direction LR
         waf["Azure Front Door Premium + WAF<br/>external zones · <b>active-active</b><br/>client IP blocks → cell (rule set)<br/>origins via Private Link"]
-        agw_in["Application Gateway WAF_v2 (private only)<br/>internal zones · vnet-&lt;env&gt;-edge<br/><b>active-passive</b>: all traffic → active cell<br/>switch by pipeline (planned or alert)"]
+        agw_in["Hub Private DNS · internal zones<br/>&lt;app&gt;.int-fi.&lt;env&gt;.example.com → Traefik IP of its <b>home cell</b><br/>records kept by ExternalDNS in the cells<br/>migration workflow moves apps between cells"]
     end
 
     subgraph FRONT["Frontend network – stateless clusters, one per availability zone"]
@@ -36,7 +36,7 @@ flowchart TB
 
     internet ==>|"HTTPS"| waf
     corp ==> agw_in
-    EDGE ==>|"HTTPS · client TLS ends at the edge · backends = Traefik ILB of the zone<br/>external: every cell, each client IP → one cell, failure or drain moves its clients<br/>internal: the active cell only, the other cell is a warm standby"| FRONT
+    EDGE ==>|"HTTPS to the Traefik ILB of the zone<br/>external: every cell via Front Door, each client IP → one cell, failure or drain moves its clients<br/>internal: straight to the app's home cell (TLS ends at Traefik), moved by migration"| FRONT
     FRONT -->|"egress + east-west"| fw
     fw -->|"TLS only: PaaS private endpoints (preferred),<br/>stateful app internal LBs"| BACK
     sf --> PAAS

@@ -11,12 +11,11 @@
   costs a drain, rollout, tests and a return ramp? Which applications need a faster path?
 - Client-IP affinity (external zones): how much traffic comes from large NATs (carrier-grade NAT, partners' proxies)
   or from clients that change addresses? This decides how even the load is and how many clients can meet both versions in a release.
-- Internal zones, active-passive: what recovery time is acceptable for internal applications when the active cell
-  fails (target for the alert-driven switch)? Is one active cell per environment enough, or do some internal zones
-  or applications need their own active cell (one routing rule per zone or per application host name)?
-- Internal entry point: confirm that the private-only Application Gateway deployment (no public frontend IP) is
-  generally available in our region together with UDR `0.0.0.0/0` → Firewall in its subnet, and its WAF_v2 limits
-  (listeners, backend pools, rules) for one gateway per internal zone with per-cell test host names.
+- Internal applications, one home cell each: what recovery time is acceptable when a cell fails (alert →
+  migration → DNS)? Do the corporate DNS forwarders honour a 60 s TTL, or do they enforce a minimum cache time?
+- ExternalDNS across cells: confirm that a shared `txt-owner-id` with policy `upsert-only` lets the target cell take
+  over records reliably (also with the source cell gone), and that the `gateway-httproute` source with an annotation
+  filter publishes exactly the routes of the placed applications.
 - Node auto provisioning in the stateless clusters: confirm that NAP with custom subnets per `NodePool` is supported
   (and generally available) in our region together with a private cluster, API Server VNet Integration, outbound type
   `userDefinedRouting` and the Azure Policy add-on. Fallback: classic node pools per zone with the cluster autoscaler.

@@ -9,7 +9,7 @@ Each **AKS spoke** contains one cluster split into a control plane zone and four
 Every cluster of the fleet – stateless or stateful – has this same inner layout; how the clusters are placed in
 the frontend and backend networks is shown in [picture 8](08-cluster-types-stateless-and-stateful.md).
 External zones receive Internet traffic through Azure Front Door Premium (WAF, Private Link to the clusters);
-internal zones are reached only from the corporate network through the firewall and an internal Application Gateway entry point. In both cases the traffic ends at the zone's Traefik gateway
+internal zones are reached only from the corporate network through the firewall, directly at the Traefik gateway of the cell that hosts the application (private DNS kept up to date by ExternalDNS). In both cases the traffic ends at the zone's Traefik gateway
 in a stateless cluster – the stateful cluster is never reached from outside the platform.
 
 ---

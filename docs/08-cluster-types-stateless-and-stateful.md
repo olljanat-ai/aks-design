@@ -55,40 +55,40 @@ stateless clusters.
 
 ## Incoming traffic: from outside and from inside
 
-All requests to applications enter through a **traffic layer** (the cell router) that lives outside the cells, so it
-survives every cluster upgrade or rebuild. It has one entry point per isolation zone, always over HTTPS (port 443
-only). Clients never connect to a cell directly. The stateful cluster is never a backend of the traffic layer.
+Clients never connect to a pod or node directly, and the stateful cluster is never reached from outside the
+platform. The two kinds of zones use the cells differently, because their availability requirements differ:
 
-The two kinds of zones use the cells differently, because their availability requirements differ:
-
-- **External zones (`ext-*`): active-active.** Every cell serves, each client is pinned to one cell by its IP
-  address, and a failed cell's clients move to another cell automatically.
-- **Internal zones (`int-*`): active-passive.** All internal traffic of an environment goes to **one active cell**;
-  the other cell(s) run the same version of everything as a warm **standby**. Switching the active cell is a
-  pipeline step, so a cell failure costs internal applications a short outage until the switch (recovery time
-  target *TBD*, minutes) – accepted because internal applications have lower availability requirements than
-  external ones.
+- **External zones (`ext-*`): every application runs in every cell, active-active.** A **traffic layer** (Azure
+  Front Door, the cell router) outside the cells pins each client to one cell by its IP address and moves the
+  clients of a failed or drained cell to another cell automatically.
+- **Internal zones (`int-*`): every application runs in one cell, its home cell.** The application team chooses the
+  cell; its DNS name points straight to the Traefik gateway of that cell, maintained by ExternalDNS. A **migration
+  workflow** moves an application to another cell without downtime – on request, around cluster upgrades, and after
+  a cell failure. A cell failure therefore costs the internal applications of that cell a short outage until they
+  are migrated (recovery time target *TBD*, minutes) – accepted because internal applications have lower
+  availability requirements than external ones. There is no WAF and no load balancer in front of internal zones.
 
 | Source | Entry point | Path to the cells |
 |---|---|---|
 | Internet (external zones `ext-*`) | **Azure Front Door Premium** with a WAF policy per zone; public DNS name of the application → Front Door endpoint | Private Link origins: a Private Link Service on the Traefik internal load balancer of the zone in **every** cell. No public IP in any spoke |
-| Corporate network (internal zones `int-*`) | **Azure Application Gateway WAF_v2**, private-only deployment (private frontend IP, no public IP), zone-redundant over AZ 1–3, one per internal zone in the edge VNet `vnet-<env>-edge`; the name `*.int-fi.prd.example.com` resolves to it in the hub Private DNS | On-premises → ExpressRoute/VPN → hub Firewall → Application Gateway → hub Firewall → Traefik internal load balancer of the zone in the **active** cell |
-| Other Azure workloads (other spokes) | Same internal entry point as the corporate network | Same as above; a Firewall rule per source |
+| Corporate network (internal zones `int-*`) | **The zone's Traefik gateway in the application's home cell**: `<app>.int-fi.prd.example.com` resolves in the hub Private DNS to the Traefik internal load balancer IP of zone `int-fi` in that cell | On-premises → ExpressRoute/VPN → hub Firewall → Traefik internal load balancer of the zone in the home cell |
+| Other Azure workloads (other spokes) | Same as the corporate network | Same as above; a Firewall rule per source |
 | Applications in the same zone and cell | Kubernetes Service (`<app>.<zone>-<app>.svc`) | Stays inside the cell and its availability zone; never goes through the traffic layer or to another cell |
+| Applications in the same internal zone, other cell | The application's DNS name, like any internal client | Hub Firewall → Traefik of the zone in the other cell (one Firewall rule per zone: zone prefix → zone prefix) |
 | Applications in another zone | Not allowed (R5). If a business flow needs it, the caller is treated like any other client: it goes through the target zone's entry point and needs an explicit Firewall rule | – |
 
-**The client's TLS session ends at the traffic layer**, not in a cell. Front Door and Application Gateway terminate
-the client's TLS (and run the WAF), then open their own TLS connections to the Traefik gateways and choose the cell
-**per HTTP request**. Neither keeps state about the client: sessions and caches belong in Azure PaaS (e.g. Azure
+No component in front of a cell keeps state about the client: sessions and caches belong in Azure PaaS (e.g. Azure
 Cache for Redis) or in the token, so a client can be moved to another cell at any time without losing anything.
 What the cell choice controls is **which application version** a client sees while a release moves through the cells
 one by one ([releases cell by cell](11-zero-downtime-application-upgrades.md#releases-cell-by-cell)).
 
 ### External zones: active-active with client-IP affinity
 
-All cells carry external traffic all the time, and every client is mapped to one cell **by its IP address**, so it
-keeps using the same cell across requests, TLS sessions and reconnects – also clients that do not support cookies
-(API clients, mobile apps, other systems):
+**The client's TLS session ends at Front Door**, not in a cell. Front Door terminates the client's TLS, runs the
+WAF, opens its own TLS connection to the Traefik gateways and chooses the cell **per HTTP request**. All cells carry
+external traffic all the time, and every client is mapped to one cell **by its IP address**, so it keeps using the
+same cell across requests, TLS sessions and reconnects – also clients that do not support cookies (API clients,
+mobile apps, other systems):
 
 - **The affinity exists for consistent versions, not for state.** It makes sure that a client sees **one
   application version at a time** during a release.
@@ -122,52 +122,82 @@ Limits of client-IP affinity, accepted in this design:
 - **Changing addresses**: a mobile client that switches networks may change cells. During a release it can then see
   the other version, which the [compatibility rule](11-zero-downtime-application-upgrades.md) covers.
 
-### Internal zones: one active cell
+**Real client IP**: the cells see Front Door's addresses; the client IP is in `X-Forwarded-For`, which Traefik
+accepts only from the Private Link Service's NAT IPs (`forwardedHeaders.trustedIPs`).
 
-Every internal zone's Application Gateway has **one backend pool per cell** (the Traefik internal load balancer IP of
-the zone in that cell). The routing rule of the zone's wildcard listener points to the pool of the **active cell**;
-the other pools are used only by the per-cell test host names (below). Which cell is active is one IaC variable per
-environment, `internal_active_cell`, so all internal zones of an environment switch together.
+Every external zone's Traefik gateway also answers to a **per-cell test host name** (e.g.
+`*.sl-az1.ext-fi.prd.example.com`): a Front Door route to the cell's origin group whose WAF policy admits only the
+pipeline's egress IPs. The release and upgrade pipelines run their smoke and synthetic tests through the real WAF and
+TLS path before the cell gets user traffic ([releases](11-zero-downtime-application-upgrades.md#releases-cell-by-cell), [section 12](12-zero-downtime-cluster-upgrades.md#stateless-clusters)).
 
-- **No affinity needed.** Only one cell serves internal clients, so they see one application version at a time
-  without any client mapping – apart from the few minutes of a rolling update inside the cell, which the
-  [compatibility rule](11-zero-downtime-application-upgrades.md) covers anyway.
-- **Planned switch** (releases, cluster upgrades): the switch pipeline pre-scales the standby cell, runs the smoke
-  tests through its test host names, points the routing rule to the standby cell's pool and waits for the
-  Application Gateway **connection draining** timeout (e.g. 300 s) so that in-flight requests on the old cell finish.
-  It is zero-downtime; long-lived connections reconnect.
-- **Unplanned switch** (cell or AZ failure): an Azure Monitor alert on the Application Gateway backend health of the
-  active pool dispatches the same switch pipeline (a safe action, [section 15](15-ai-driven-day-2-operations.md#safe-actions-without-a-pull-request)),
-  which skips the pre-scale wait if the active cell is gone. Internal applications are unavailable from the failure
-  until the switch completes.
-- **The standby cell stays warm and proven.** It runs every application with the same `minReplicas` and receives
-  continuous synthetic traffic through its test host names, so a failing standby alerts before it is needed. It is
-  sized like every cell to carry 100 % of the load (N+1), the same as for active-active.
-- **The active cell is never changed in place.** A release or cluster upgrade of the active cell is always preceded by
-  a planned switch, so internal clients never hit a cell that is being changed.
-- **Client IP**: Application Gateway passes it to Traefik in `X-Forwarded-For`. The hub Firewall allows the flow
-  corporate network → Application Gateway with network rules (no SNAT to private destinations), so that the WAF and
-  the logs see the real client address.
-
-### Common to both
-
-**Real client IP for the applications**: the cells see the traffic layer's addresses; the client IP is in
-`X-Forwarded-For`, which Traefik accepts only from the traffic layer's addresses (`forwardedHeaders.trustedIPs`).
-
-Every Traefik gateway also answers to a **per-cell test host name** (e.g. `*.sl-az1.int-fi.prd.example.com`),
-published through the zone's entry point to that cell only: an Application Gateway listener with that cell's pool
-as the only backend, or a Front Door route to the cell's origin group whose WAF policy admits only the pipeline's
-egress IPs. The release and upgrade pipelines run their smoke and synthetic tests through the real WAF and TLS path
-before the cell gets user traffic ([releases](11-zero-downtime-application-upgrades.md#releases-cell-by-cell), [section 12](12-zero-downtime-cluster-upgrades.md#stateless-clusters)).
-
-The Application Gateways live in a separate **edge VNet** per environment (`vnet-<env>-edge`), peered to the hub.
-Each internal zone's gateway is in its own dedicated subnet inside the zone's address space
-([address plan](#vnets-and-address-plan)), so the Firewall rule "edge `int-fi` → cells `int-fi`" is again expressed
-with zone prefixes, and a UDR sends the cell prefixes → Firewall. External zones need no subnet there, because Front
-Door is a global service that reaches the cells through Private Link: the Traefik `Service` in `<zone>-gateway`
+Front Door is a global service that reaches the cells through Private Link: the Traefik `Service` in `<zone>-gateway`
 creates the Private Link Service itself (`service.beta.kubernetes.io/azure-pls-create: "true"`), and the NSG of
 `snet-ext-<country>-ilb` allows TCP 443 only from the Private Link Service's NAT IPs. This traffic does not pass the hub
 Firewall; the Front Door WAF and Traefik are its controls.
+
+### Internal zones: one home cell per application, moved by migration
+
+**Placement.** Every internal application has exactly one **home cell** per environment, chosen by its team in Git
+(`apps/<app>/stateless/<env>/placement.yaml`, e.g. `cell: sl-az2`); the default is the slow-speed cell `sl-az2`,
+which runs the more proven Kubernetes version ([update policy](12-zero-downtime-cluster-upgrades.md#update-policy)).
+Placement is environment state, not part of the release train: CI renders it into a separate signed artifact
+`placement:<git-sha>`, which every cell follows through its own Flux Kustomization (tag `<env>-placement`,
+interval 1 min). It creates the application's Flux Kustomization only in its home cell – and during a migration also
+in the target cell; the application's manifests themselves still come from the cell's fleet tag.
+
+**DNS by ExternalDNS.** Each internal zone has a Private DNS zone in the hub (`int-fi.prd.example.com`, linked to the
+hub VNet and resolved from on-premises through the DNS forwarders). Every cell runs **ExternalDNS** in the platform
+namespace `infra-dns`, with:
+
+- provider `azure-private-dns`, a workload identity with *Private DNS Zone Contributor* on the internal zones'
+  Private DNS zones only, and `management.azure.com` on the Firewall allow-list;
+- source `gateway-httproute`: the A record of each hostname of an `HTTPRoute` points to the address of the zone's
+  Traefik `Gateway` in that cell – a **static IP** per zone and cell, set on the Traefik internal load balancer
+  (`service.beta.kubernetes.io/azure-load-balancer-ipv4`) and kept in `cluster-vars`;
+- annotation filter `platform/dns-publish=true`: only the cell that serves the application publishes it. The
+  placement artifact sets the annotation (through Flux variable substitution), so exactly one cell publishes each
+  name, and Azure Policy rejects the annotation in application manifests;
+- one shared `txt-owner-id` per environment and policy `upsert-only`, so the target cell of a migration can take
+  over a record from the source cell – also when the source cell is gone – and no cell ever deletes a record
+  another cell has just written. Records of removed applications are deleted by the decommissioning pipeline;
+- record TTL 60 s, sync interval 1 min.
+
+**Migration workflow** – a pipeline in the runbooks repository; the same steps serve every reason to move:
+
+1. **Deploy to the target**: the placement adds the target cell without `platform/dns-publish`; Flux deploys the
+   application there (NAP adds nodes if needed). Wait until its Kustomization is `Ready`.
+2. **Test**: smoke tests against the target cell's Traefik IP with the application's real host name
+   (`curl --resolve`), over the real TLS path.
+3. **Switch DNS**: the placement moves `platform/dns-publish` to the target cell. Its ExternalDNS overwrites the A
+   record within a minute.
+4. **Drain the source**: wait for the TTL and until the source cell's Traefik sees no more requests for the
+   application (or a maximum, e.g. 15 min, for clients that cache DNS too long); long-lived connections are closed
+   and reconnect to the target.
+5. **Remove from the source**: the placement drops the source cell; Flux prunes the application there.
+
+Until step 5, the migration is rolled back by moving `platform/dns-publish` back. Planned migrations are
+zero-downtime. Teams start one by a pull request that changes their `placement.yaml`.
+
+**Cell failure.** An alert on the cell's health (Traefik health routes probed by synthetic monitoring, AKS and VM
+health) dispatches the **failover**: the migration workflow for all internal applications of the failed cell, with
+step 4 skipped and step 5 deferred until the cell is back (a safe action,
+[section 15](15-ai-driven-day-2-operations.md#safe-actions-without-a-pull-request)). Their recovery time is alert +
+Flux reconcile + node provisioning and pod start in the target + ExternalDNS sync + TTL. The failed-over
+applications stay in their new cell; the team or the platform moves them back by a planned migration.
+
+**Consequences:**
+
+- **TLS ends at Traefik.** Internal clients connect to the Traefik gateway directly with the zone's certificate
+  ([section 13](13-encryption-in-transit-and-tls.md)); there is no WAF in front of internal zones.
+- **Real client IP**: Traefik sees it directly, because its `Service` uses `externalTrafficPolicy: Local` and the hub
+  Firewall allows the flow with network rules (no SNAT to private destinations).
+- **One version at a time.** An internal application runs in one cell, so its clients see one version, apart from
+  the few minutes of a rolling update, which the [compatibility rule](11-zero-downtime-application-upgrades.md)
+  covers anyway.
+- **Capacity**: every cell must still be able to take all internal applications of the other cell(s) – for upgrades
+  and failures – so the N+1 sizing does not change. The NAP `NodePool` limits are the same in every cell.
+- **Firewall**: corporate network and the pipeline agents → `snet-int-<country>-ilb` of every cell on TCP 443, with
+  zone prefixes, so a migration never needs a Firewall change.
 
 ## VNets and address plan
 
@@ -183,14 +213,13 @@ Why not one common VNet?
 | Change one cluster at a time (R12) | Yes – a VNet change (address space, DNS servers, VNet encryption, peering) affects one cluster, and a stateless cluster can be rebuilt with a fresh VNet | No – every VNet change hits all clusters at once | No for the stateless clusters – a VNet change hits all of them at once |
 | VNet settings per cluster type | VNet encryption on the stateless VNets only, other DNS/egress settings for the backend | One setting for all | Yes |
 | One prefix per zone | Yes – from the address plan below | Yes | Yes |
-| Extra cost | 3–4 hub peerings per environment (plus the edge VNet, needed in every option); the address space of a new zone is added in each cluster VNet (an IaC loop) | – | – |
+| Extra cost | 3–4 hub peerings per environment; the address space of a new zone is added in each cluster VNet (an IaC loop) | – | – |
 
 The usual reason to share a VNet – one summarisable prefix per zone – is achieved by the address plan instead, so
 the separate VNets cost almost nothing. The only real cost is that each new zone is added to 3–4 VNets instead of 1.
 
 **Address plan (example).** Every environment gets a `/12`, every country a `/16` of it, and every isolation zone
-a `/17` (internal first half, external second half). Inside a zone's `/17` the frontend (stateless clusters and the
-zone's internal entry point) uses the first `/18` and the stateful cluster the second `/18`, one `/20` each. That `/20` is added as an address space
+a `/17` (internal first half, external second half). Inside a zone's `/17` the frontend (stateless clusters) uses the first `/18` and the stateful cluster the second `/18`, one `/20` each. That `/20` is added as an address space
 to the cluster's VNet, and inside it the subnet layout of [picture 2](02-network-layout.md) is reused. The platform
 `/16` holds the control plane zone of every cluster in the same way.
 
@@ -208,7 +237,7 @@ Layout of one zone, prd `int-fi` `10.49.0.0/17` (`ext-fi` is the same from `10.4
 | `10.49.0.0/20` | `int-fi` in `sl-az1` | `vnet-prd-sl-az1` |
 | `10.49.16.0/20` | `int-fi` in `sl-az2` | `vnet-prd-sl-az2` |
 | `10.49.32.0/20` | `int-fi` in `sl-az3` (optional) | `vnet-prd-sl-az3` |
-| `10.49.48.0/20` | `int-fi` internal entry point, Application Gateway ([incoming traffic](#incoming-traffic-from-outside-and-from-inside)); unused in external zones | `vnet-prd-edge` |
+| `10.49.48.0/20` | Reserve (e.g. a fourth cell or a side-by-side rebuild) | – |
 | `10.49.64.0/20` | `int-fi` in the stateful cluster | `vnet-prd-sf` |
 | `10.49.80.0/20` – `10.49.112.0/20` | Reserve: more pod IPs for the stateful cluster (added as another address space) | `vnet-prd-sf` |
 
@@ -225,7 +254,7 @@ the way the rules are written:
 | Everything in the environment | `10.48.0.0/12` |
 | Country `fi` (both zones) | `10.49.0.0/16` |
 | Zone `int-fi`, all clusters | `10.49.0.0/17` |
-| Zone `int-fi`, frontend (cells and the zone's internal entry point) | `10.49.0.0/18` |
+| Zone `int-fi`, frontend (cells) | `10.49.0.0/18` |
 | Zone `int-fi`, stateful cluster (backend) | `10.49.64.0/18` |
 
 The rule "stateless zone *X* → stateful zone *X*" is therefore one Firewall rule per zone (`10.49.0.0/18 →
@@ -243,8 +272,7 @@ dev → acc → prd, and the existing zones only get new routes and Firewall rul
 
 1. **Allocate** the country's next `/16` per environment from the address plan (kept in IaC, or in an Azure
    Virtual Network Manager IP address pool).
-2. **Address spaces:** add the zones' `/20`s to each cluster VNet (and the internal zone's edge `/20` to the edge
-   VNet) and sync the hub peering
+2. **Address spaces:** add the zones' `/20`s to each cluster VNet and sync the hub peering
    (`az network vnet peering sync`). Both are online operations; the new prefixes are then advertised to
    on-premises through the hub gateway automatically.
 3. **Subnets, NSGs, route tables** for the new zones; add a route for each new address space to the existing zones'
@@ -258,9 +286,8 @@ dev → acc → prd, and the existing zones only get new routes and Firewall rul
    `extxxz1`–`z3` (`--vnet-subnet-id`, `--pod-subnet-id`, fixed node count). Neither restarts existing nodes.
 7. **Policies and Git:** the zone's Azure Policy mutation and validation, Traefik gateway and namespaces through
    Flux and the stateful pipeline.
-8. **Traffic layer:** the internal zone's Application Gateway (subnet, WAF policy, one backend pool per cell, routing to
-   the active cell) in the edge VNet and the external zone's WAF policy,
-   origin groups, Private Link origins and IP-block rule set in Front Door; approve the Private Link connections. Existing zones' entry
+8. **Entry points:** the internal zone's Private DNS zone in the hub (with ExternalDNS's role on it) and a static
+   Traefik IP per cell in `cluster-vars`; the external zone's WAF policy, origin groups, Private Link origins and IP-block rule set in Front Door; approve the Private Link connections. Existing zones' entry
    points do not change.
 
 In the backend spoke each isolation zone's `snet-<zone>-pe` also holds the private endpoints of that zone's PaaS

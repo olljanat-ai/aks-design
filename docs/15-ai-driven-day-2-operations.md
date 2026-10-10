@@ -170,7 +170,7 @@ the operations agent may only dispatch them:
 |---|---|
 | Halt a running release or upgrade | Always allowed |
 | Drain one stateless cell (traffic weight 0 at the cell router) | Never the last cell in traffic, at most one cell per environment, alert to the platform on-call |
-| Switch internal zones to the standby cell (also dispatched by the backend health alert of the internal Application Gateway) | Only when the active cell is unhealthy or drained, only to a cell whose test host names pass the smoke tests, alert to the platform on-call; a follow-up pull request sets `internal_active_cell` in Git |
+| Fail over the internal applications of a failed cell (also dispatched by the cell health alert) | Only when the cell is unhealthy, only to a cell in traffic, through the migration workflow (the only change it commits without a pull request is the placement of the affected applications), alert to the platform on-call |
 | Roll a cell back to its previous fleet tag | Only to the tag it had before the current release |
 | Suspend a Flux Kustomization of an application | Application namespaces only, never `infra-*` |
 

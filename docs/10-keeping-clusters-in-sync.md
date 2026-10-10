@@ -13,12 +13,12 @@ fleet/
 │   └── prd/{sl-az1,sl-az2,sl-az3}/
 ├── infrastructure/
 │   ├── base/                      # Cilium baseline policies + FQDN egress presets, External Secrets Operator per zone, monitoring
-│   ├── stateless/                 # NAP NodePool + AKSNodeClass per zone, Traefik + Gateways + certificate ExternalSecret per zone, KEDA
+│   ├── stateless/                 # NAP NodePool + AKSNodeClass per zone, Traefik + Gateways + certificate ExternalSecret per zone, KEDA, ExternalDNS
 │   └── stateful/                  # storage classes (ZRS), operators (no Gateway API) – applied by the pipeline
 └── apps/
     └── <app>/
         ├── base/                      # incl. the application's CiliumNetworkPolicy `egress` (FQDNs)
-        ├── stateless/{dev,acc,prd}/   # image digests + replicas/HPA per environment – Flux
+        ├── stateless/{dev,acc,prd}/   # image digests + replicas/HPA per environment – Flux; internal apps: placement.yaml (home cell)
         └── stateful/{dev,acc,prd}/    # applied by the pipeline
 ```
 
@@ -57,6 +57,11 @@ better, and the Internet-less cluster runs one component less.
   pipeline moves one tag at a time, while that cell is drained, and the next one only after the cell is back in
   traffic and its error-rate / latency checks pass ([releases cell by cell](11-zero-downtime-application-upgrades.md#releases-cell-by-cell)), so a bad change
   never reaches every cell at once. Rollback = drain the cell and move the tag back.
+- **Placement of internal applications** is not part of the cell tags: CI renders all `placement.yaml` files into a
+  separate signed artifact `placement:<git-sha>` with tag `<env>-placement`, which every cell follows (interval
+  1 min). It holds the Flux Kustomizations of the internal applications placed in each cell, so a migration
+  ([internal zones](08-cluster-types-stateless-and-stateful.md#internal-zones-one-home-cell-per-application-moved-by-migration))
+  takes effect within minutes and independently of the release train. External applications are in every cell.
 - **Drift** is corrected on every reconcile (interval 10 min, alerts to the platform channel through Flux
   notification-controller).
 

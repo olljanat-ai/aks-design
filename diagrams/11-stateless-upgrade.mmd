@@ -3,17 +3,17 @@
 sequenceDiagram
     autonumber
     participant P as Pipeline<br/>(cluster upgrade or release)
-    participant T as Traffic layer / cell router<br/>(Front Door / Application Gateway)
+    participant T as Traffic layer<br/>(Front Door · internal DNS)
     participant A as Cell aks-env-sl-az1
     participant B as Cell aks-env-sl-az2
-    Note over A,B: External: both cells serve, clients pinned by client IP. Internal: az2 active, az1 standby. Each cell can carry 100 % (N+1)
+    Note over A,B: External: both cells serve, clients pinned by client IP. Internal: each app in its home cell. Each cell can carry 100 % (N+1)
     P->>B: Pre-scale: raise HPA minReplicas to full-load capacity, NAP adds nodes
-    P->>T: Take az1 out (disable Front Door origin)<br/>If az1 were the internal active cell: switch internal zones to az2 first
+    P->>T: Take az1 out – disable its Front Door origins<br/>(cluster upgrade: first migrate its internal apps to az2 – deploy, test, DNS switch)
     T-->>A: Connection draining – az1 clients move to az2 (old version)
     P->>A: Upgrade control plane + system pool, NAP replaces zone nodes (drift)<br/>(or rebuild from IaC)<br/>or move the cell's release tag
     A->>A: Flux reconciles all apps, health checks
     P->>A: Smoke + synthetic tests through the per-cell test host names
-    P->>T: Return az1 – its external clients come back and get the new version<br/>Release: after soak, switch internal zones to az1 (new version)
+    P->>T: Return az1 – its external clients come back and get the new version<br/>(cluster upgrade: after soak, migrate its internal apps back)
     Note over P: Watch error rate / latency SLO. Breach → take az1 out again, stop (release: revert tag).
     P->>A: Release: soak, pre-scale az1, repeat steps 2–7 for az2 (and az3)<br/>Cluster update: az2 (and az3) follow later on the slow speed
     P->>B: Remove pre-scale, HPA / KEDA and NAP consolidation take over

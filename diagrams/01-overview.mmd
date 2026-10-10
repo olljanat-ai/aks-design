@@ -42,7 +42,7 @@ flowchart TB
     HUB ===|"VNet peering<br/>UDR 0.0.0.0/0 → Firewall<br/>from every subnet"| SPOKE
     jump --> pe_api -.->|"Private Link"| api
     internet ==>|"HTTPS via Front Door WAF<br/>(Private Link)"| EXT
-    fw ==>|"corporate users via Firewall<br/>+ internal Application Gateway (edge VNet)"| INT
+    fw ==>|"corporate users via Firewall<br/>→ Traefik of the app's home cell<br/>(private DNS by ExternalDNS)"| INT
 
     classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
     classDef cp fill:#eceff1,stroke:#455a64,color:#000

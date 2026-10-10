@@ -14,7 +14,7 @@ flowchart LR
     kv["Platform Key Vault kv-&lt;env&gt;-platform<br/>(once per environment)<br/>cert-ext-fi-wildcard<br/>*.ext-fi.&lt;env&gt;.example.com<br/>+ cert-int-fi-…, cert-*-se-…"]
 
     subgraph EDGE["Traffic layer"]
-        agw["Front Door / Application Gateway<br/>HTTPS listener only"]
+        agw["Front Door (external zones)<br/>HTTPS listener only<br/>internal clients connect to Traefik directly"]
     end
 
     subgraph SL["Stateless clusters sl-az1/2/3 · Azure CNI Overlay · VNet encryption between nodes"]
