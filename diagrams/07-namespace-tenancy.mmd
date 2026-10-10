@@ -5,7 +5,7 @@ flowchart LR
 
     subgraph ZONE["Zone ext-fi (node pool extfi)"]
         direction LR
-        appgw["Traffic layer: Front Door WAF (ext) /<br/>internal NGINXaaS + WAF (int)<br/>HTTPS only"]
+        appgw["Traffic layer: Front Door WAF (ext) /<br/>internal Application Gateway WAF (int)<br/>HTTPS only"]
         subgraph ING["ns: ext-fi-gateway (platform)"]
             ic["Traefik · Gateway ext-fi<br/>listener HTTPS :443 only<br/>*.ext-fi.&lt;env&gt;.example.com<br/>(Let's Encrypt, from Key Vault via ESO)"]
         end

@@ -162,14 +162,15 @@ pull request that brings Git back in line, opened by the operations agent from t
 
 ## Safe actions without a pull request
 
-Some incidents cannot wait for a pull request, but all of them are in the **safe direction**: stopping, not
-starting. They are parameterised pipelines in the runbooks repository, run with the existing deployment identities;
+Some incidents cannot wait for a pull request, but all of them are in the **safe direction**: stopping, or
+moving traffic away from a failing cell, not starting. They are parameterised pipelines in the runbooks repository, run with the existing deployment identities;
 the operations agent may only dispatch them:
 
 | Action | Limits enforced by the runbook |
 |---|---|
 | Halt a running release or upgrade | Always allowed |
 | Drain one stateless cell (traffic weight 0 at the cell router) | Never the last cell in traffic, at most one cell per environment, alert to the platform on-call |
+| Switch internal zones to the standby cell (also dispatched by the backend health alert of the internal Application Gateway) | Only when the active cell is unhealthy or drained, only to a cell whose test host names pass the smoke tests, alert to the platform on-call; a follow-up pull request sets `internal_active_cell` in Git |
 | Roll a cell back to its previous fleet tag | Only to the tag it had before the current release |
 | Suspend a Flux Kustomization of an application | Application namespaces only, never `infra-*` |
 
