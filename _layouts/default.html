@@ -5,27 +5,42 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow, noarchive">
 <title>{% if page.title and page.title != site.title %}{{ page.title }} – {% endif %}{{ site.title }}</title>
+<script>
+  // Apply the saved theme before the page is drawn, so a dark page does not flash white.
+  try { var t = localStorage.getItem('theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
 <style>
-  body { max-width: 1100px; margin: 0 auto; padding: 16px; font: 16px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #1f2328; }
+  :root { color-scheme: light; --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --border: #d0d7de; --subtle: #f6f8fa; --link: #0969da; }
+  :root[data-theme="dark"] { color-scheme: dark; --fg: #e6edf3; --bg: #0d1117; --muted: #9198a1; --border: #3d444d; --subtle: #151b23; --link: #4493f8; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { color-scheme: dark; --fg: #e6edf3; --bg: #0d1117; --muted: #9198a1; --border: #3d444d; --subtle: #151b23; --link: #4493f8; }
+  }
+  body { max-width: 1100px; margin: 0 auto; padding: 16px; font: 16px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--fg); background: var(--bg); }
+  a { color: var(--link); }
   img { max-width: 100%; }
+  /* The diagrams are drawn for a white background; keep them on one in dark mode too. */
+  main img { background: #ffffff; border-radius: 6px; }
   table { border-collapse: collapse; display: block; overflow-x: auto; }
-  th, td { border: 1px solid #d0d7de; padding: 6px 12px; }
-  code, pre { background: #f6f8fa; border-radius: 4px; }
+  th, td { border: 1px solid var(--border); padding: 6px 12px; }
+  code, pre { background: var(--subtle); border-radius: 4px; }
   code { padding: 0.1em 0.3em; }
   pre { padding: 12px; overflow-x: auto; }
-  blockquote { margin: 0; padding: 0 1em; color: #59636e; border-left: 4px solid #d0d7de; }
+  blockquote { margin: 0; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--border); }
   #lightbox { display: none; position: fixed; inset: 0; z-index: 1000; background: #fff; cursor: zoom-out; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
   #lightbox.open { display: flex; }
   #lightbox img { width: 100%; height: 100%; object-fit: contain; }
   main img { cursor: zoom-in; }
-  #pagebar { display: flex; justify-content: space-between; gap: 16px; padding-bottom: 8px; border-bottom: 1px solid #d0d7de; font-size: 14px; }
-  #pagebar a { color: #0969da; text-decoration: none; }
+  #pagebar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  #pagebar .right { display: flex; align-items: center; gap: 16px; }
+  #pagebar a { color: var(--link); text-decoration: none; }
   #pagebar a:hover { text-decoration: underline; }
-  #toc { margin: 1em 0 2em; padding: 8px 16px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
+  #theme-toggle { font: inherit; color: var(--fg); background: var(--subtle); border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+  #toc { margin: 1em 0 2em; padding: 8px 16px; background: var(--subtle); border: 1px solid var(--border); border-radius: 6px; }
   #toc h2 { margin: 0.5em 0; font-size: 1.25em; border: 0; }
   #toc ul { margin: 0; padding-left: 0; list-style: none; }
   #toc ul ul { padding-left: 1.5em; list-style: disc; }
   @media print {
+    :root[data-theme], :root:not([data-theme]) { color-scheme: light; --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --border: #d0d7de; --subtle: #f6f8fa; --link: #0969da; }
     body { max-width: none; padding: 0; }
     #lightbox { display: none !important; }
     main img { cursor: auto; }
@@ -41,7 +56,10 @@
 <body>
 <nav id="pagebar" aria-label="Page">
 <a href="{{ '/' | relative_url }}">{{ site.title }}</a>
+<span class="right">
+<button type="button" id="theme-toggle" hidden></button>
 <a href="https://github.com/{{ site.repository }}/edit/{{ site.branch }}/{{ page.path }}">Edit this page</a>
+</span>
 </nav>
 <main>
 {%- comment -%}
@@ -91,6 +109,27 @@
 </main>
 <div id="lightbox" role="dialog" aria-label="Picture in full screen"><img alt=""></div>
 <script>
+(function () {
+  // Light / dark toggle. Follows the system setting until the reader picks one, which is then remembered.
+  var root = document.documentElement;
+  var btn = document.getElementById('theme-toggle');
+  var systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+  function current() { return root.getAttribute('data-theme') || (systemDark.matches ? 'dark' : 'light'); }
+  function label() {
+    var next = current() === 'dark' ? 'light' : 'dark';
+    btn.textContent = next === 'dark' ? '\u263E Dark' : '\u2600 Light';
+    btn.setAttribute('aria-label', 'Switch to ' + next + ' mode');
+  }
+  btn.addEventListener('click', function () {
+    var next = current() === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('theme', next); } catch (e) {}
+    label();
+  });
+  systemDark.addEventListener('change', label);
+  label();
+  btn.hidden = false;
+})();
 (function () {
   var box = document.getElementById('lightbox');
   var big = box.querySelector('img');
