@@ -1,0 +1,40 @@
+%% Implementation project: the platform is built and accepted in a separate build tenant that is not connected to the
+%% corporate network, with all Azure Policy assignments in audit mode during prototyping. Only the dev environment is
+%% built there. When performance, HA, upgrade, recovery and security acceptance have passed, the same IaC and Git
+%% configuration is deployed to the corporate landing zone and connected to the corporate network.
+flowchart LR
+    subgraph BT["Build tenant – own Entra ID tenant · NOT connected to the corporate network · synthetic data only"]
+        direction LR
+        p1["Phase 1 · Foundation<br/>tenant, management, hub, sub-aks-dev<br/>address plan reserved from corporate IPAM<br/>Azure Policy: all assignments in audit"]
+        p2["Phase 2 · Rapid prototyping<br/>build → test → change, in days not weeks<br/>until every requirement R1–R20 has a passing test"]
+        p3["Phase 3 · Acceptance testing in dev<br/>policies switched to deny<br/>performance · HA / chaos · zero-downtime upgrades<br/>rebuild & recovery · operations"]
+        p4["Phase 4 · Security reviews<br/>threat model · configuration & identity review<br/>penetration test · supply chain"]
+        p1 --> p2
+        p2 -->|"requirements met"| p3
+        p3 --> p4
+        p2 -.->|"design change"| p2
+        p3 -.->|"finding"| p2
+        p4 -.->|"finding"| p2
+    end
+
+    gate{"Connection<br/>readiness gate<br/>platform · security ·<br/>network approval"}
+
+    subgraph CT["Corporate tenant – landing zone · policies enforced · connected to corporate hub"]
+        direction LR
+        c_dev["dev<br/>same IaC + Git<br/>corporate integration tests"]
+        c_acc["acc<br/>application onboarding<br/>user acceptance"]
+        c_prd["prd"]
+        c_dev --> c_acc --> c_prd
+    end
+
+    p4 --> gate
+    gate ==>|"approved: deploy the same code<br/>(no manual changes carried over)"| c_dev
+
+    classDef phase fill:#e0f2f1,stroke:#00695c,color:#000
+    classDef sec fill:#fffde7,stroke:#9e9d24,color:#000
+    classDef corp fill:#ede7f6,stroke:#4527a0,color:#000
+    classDef gatec fill:#eceff1,stroke:#455a64,color:#000
+    class p1,p2,p3 phase
+    class p4 sec
+    class c_dev,c_acc,c_prd corp
+    class gate gatec

@@ -65,7 +65,14 @@
   catalogue of common SaaS / package endpoints)?
 - Git platform: GitHub (organisation rulesets, required workflows, GitHub Apps) as in the draft, or Azure DevOps with
   branch policies and build validation?
+- Implementation project: is a separate build tenant, not connected to the corporate network and with Azure Policy
+  in audit mode, acceptable to security and the landing zone owners ([section 17](17-implementation-project-and-acceptance-testing.md))?
+  Can the platform's address prefixes be reserved in the corporate IPAM already for the build tenant? Is the accepted
+  version redeployed into the corporate tenant (current draft), or is the build tenant's hub connected to the
+  corporate network instead?
+- Acceptance targets: latency, error budget, failover time, RPO / RTO and prd peak load for the reference
+  application – who sets them, and who signs off the connection readiness gate?
 
 ---
 
-[Back to contents](../README.md) · Previous: [16. Advanced networking: eBPF host routing and FQDN egress](16-advanced-networking-and-fqdn-egress.md) · Next: [Editing the pictures](editing-the-pictures.md)
+[Back to contents](../README.md) · Previous: [17. Implementation project and acceptance testing](17-implementation-project-and-acceptance-testing.md) · Next: [Editing the pictures](editing-the-pictures.md)

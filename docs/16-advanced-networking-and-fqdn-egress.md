@@ -188,4 +188,4 @@ Known limits of ACNS FQDN filtering and how the design handles them:
 
 ---
 
-[Back to contents](../README.md) · Previous: [15. AI-driven day 2 operations](15-ai-driven-day-2-operations.md) · Next: [Open questions](open-questions.md)
+[Back to contents](../README.md) · Previous: [15. AI-driven day 2 operations](15-ai-driven-day-2-operations.md) · Next: [17. Implementation project and acceptance testing](17-implementation-project-and-acceptance-testing.md)
