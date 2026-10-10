@@ -2,7 +2,7 @@
 %% The zone Key Vault holds secrets only for targets without Entra ID. Applications never read it themselves:
 %% the zone's External Secrets Operator pulls with a per-application reader identity (RBAC + ABAC prefix condition)
 %% and writes Kubernetes Secrets. The Secrets Store CSI driver is disabled.
-%% Platform components (Traefik) may use Key Vault directly with their own identity.
+%% Traefik gets its certificate through ESO like an application; other platform components may use Key Vault directly.
 %% Certificates live in the per-environment platform Key Vault, readable with plain RBAC scoped to single certificates.
 flowchart LR
     subgraph ZONE["Zone int-fi (namespaces on the zone's nodes)"]
@@ -45,7 +45,7 @@ flowchart LR
         certO["cert-ext-fi-wildcard, cert-int-se-…<br/>(other zones' certificates)"]
     end
 
-    raC["Key Vault Secrets User<br/>scope: kv-&lt;env&gt;-platform/secrets/cert-int-fi-wildcard<br/>for Traefik's own identity id-int-fi-gateway (platform, direct)<br/>and secrets-reader identities of TLS-terminating apps (plain RBAC)"]
+    raC["Key Vault Secrets User<br/>scope: kv-&lt;env&gt;-platform/secrets/cert-int-fi-wildcard<br/>for the secrets-reader identities of int-fi-gateway (Traefik)<br/>and TLS-terminating apps, used only by ESO (plain RBAC)"]
 
     ext["Third-party API<br/>(no Entra ID support)"]
 

@@ -17,7 +17,7 @@ egress per namespace ([below](#observing-and-troubleshooting)).
 
 **Rule: an application can send traffic out of the cluster only to destinations that it has declared by FQDN.** No
 policy means no traffic leaves the cluster; IP addresses and CIDRs cannot be used to open egress. This applies to
-every destination outside the cluster – Azure PaaS private endpoints, Key Vault (External Secrets Operator and platform components only), Entra ID, the stateful cluster's
+every destination outside the cluster – Azure PaaS private endpoints, Key Vault (External Secrets Operator and other platform components only), Entra ID, the stateful cluster's
 internal load balancers, on-premises systems and the Internet – and to both cluster types.
 
 ## Why per-application FQDN policies
@@ -160,7 +160,8 @@ on its own; together with Cilium's default deny that is enough to make FQDN poli
 
 Platform namespaces (`<zone>-gateway`, `<zone>-secrets` with External Secrets Operator, `flux-system`, monitoring) have
 platform-owned egress policies built the same way – FQDNs wherever the destination has a name – and are reviewed
-with the platform change. They are the only egress policies that may name a Key Vault. `kube-system` and node (host network) traffic – kubelet, image pulls, AKS-required FQDNs –
+with the platform change. They are the only egress policies that may name a Key Vault; `<zone>-gateway` does not – Traefik gets its
+certificate from External Secrets Operator. `kube-system` and node (host network) traffic – kubelet, image pulls, AKS-required FQDNs –
 are not pod traffic; they are controlled by the Firewall allow-list as before.
 
 ## Observing and troubleshooting
