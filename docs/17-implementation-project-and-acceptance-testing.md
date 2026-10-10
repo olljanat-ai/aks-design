@@ -28,7 +28,7 @@ then goes back to its own.
 | Azure Policy | The corporate landing zone initiatives and the platform's own definitions ([section 14](14-policy-enforcement.md)) assigned at the same scopes as in the corporate tenant, **all with effect `audit` / `enforcementMode: DoNotEnforce`** | Nothing blocks a prototype, but the compliance view shows from day one what the corporate tenant would deny |
 | DNS and certificates | A separate test domain (e.g. `example-test.com`) with its own public validation zone for Let's Encrypt | The corporate DNS zones are not touched |
 | Git and pipelines | The same repositories; a `build` target with its own GitHub environments and OIDC federated credentials to the build tenant | The code that is accepted is the code that goes to the corporate tenant |
-| AI agents | Allowed with the same guardrails as [section 15](15-ai-driven-day-2-operations.md); the model provider question can be answered here with synthetic data | – |
+| AI agents | **Full permissions during phases 1 and 2**: Owner on the build tenant's subscriptions and cluster admin, so they can change Azure and the clusters directly, not only through pull requests; every action is logged (Activity Log, Entra ID sign-in logs, Kubernetes audit logs) | The agents are built in the same project, and what they really need is not known yet: their least-privilege identities, risk tiers and merge gate ([section 15](15-ai-driven-day-2-operations.md)) are derived from what they actually did; the model provider question can also be answered here with synthetic data |
 | Data | **Synthetic test data only**; no copies of production or customer data | The tenant does not have the corporate controls, so it must not hold anything they protect |
 | Internet | Egress through the hub Firewall, the same FQDN allow-lists as designed, plus what prototyping temporarily needs | – |
 
@@ -39,6 +39,11 @@ Rules that keep the build tenant from drifting away from what will be deployed l
   must be empty.
 - **Policy audit results are tracked.** Every non-compliant result of a corporate initiative is either fixed or
   recorded as a requested exemption with a reason; the list must be empty or approved before phase 3.
+- **Agent permissions are reduced before acceptance.** At the end of phase 2 the logged agent actions are turned
+  into the per-agent, per-environment roles and the risk tiers of [section 15](15-ai-driven-day-2-operations.md);
+  from phase 3 on the agents run with exactly those, read-only identities and changes only through pull requests,
+  so acceptance tests the permission model that will go to the corporate tenant. Changes an agent made directly
+  during prototyping count as portal changes: they are in code or removed.
 - **The tenant can be destroyed at any time.** Phase 3 includes rebuilding dev from an empty subscription; nothing
   in the build tenant is ever migrated to the corporate tenant (subscriptions are not moved between tenants: role
   assignments, managed identities and Key Vault access would be lost anyway).
@@ -48,8 +53,8 @@ Rules that keep the build tenant from drifting away from what will be deployed l
 | Phase | Goal | Exit criterion |
 |---|---|---|
 | 1. Foundation | Build tenant, management and hub, `sub-aks-dev`, pipelines and OIDC, Azure Policy in audit, the client VNet | A stateless cell can be created and deleted by the pipeline |
-| 2. Rapid prototyping | Build → test → change until the design meets every requirement; [open questions](open-questions.md) answered by experiments (NAP with custom subnets, eBPF host routing with VNet encryption, Key Vault ABAC, NGINXaaS, …) | Every requirement R1–R20 has at least one automated test that passes; design documents updated to what was built |
-| 3. Acceptance testing in dev | Prove performance, HA, zero-downtime upgrades, recovery and operability with **all policies switched to `deny`** | All tests in the tables below pass, results recorded |
+| 2. Rapid prototyping | Build → test → change until the design meets every requirement; [open questions](open-questions.md) answered by experiments (NAP with custom subnets, eBPF host routing with VNet encryption, Key Vault ABAC, NGINXaaS, …); AI agents built with full permissions | Every requirement R1–R20 has at least one automated test that passes; design documents updated to what was built; agent roles and risk tiers derived from the logged agent actions |
+| 3. Acceptance testing in dev | Prove performance, HA, zero-downtime upgrades, recovery and operability with **all policies switched to `deny`** and the AI agents on their least-privilege identities | All tests in the tables below pass, results recorded |
 | 4. Security reviews | Independent review of the built platform | No open critical or high findings; medium findings have an owner and a date |
 | Connection readiness gate | Platform owner, security and network team approve connecting | Checklist [below](#connection-readiness-gate) complete |
 | 5. Corporate tenant | The same code deployed to the corporate landing zone: dev, then acc, then prd | Corporate integration tests in dev, application onboarding and user acceptance in acc |
@@ -156,7 +161,7 @@ in the build tenant with all policies in `deny`.
 |---|---|---|
 | Threat model | STRIDE over the design documents and the as-built diagrams: trust boundaries (Internet, corporate network, cells, isolation zones, management VNet, CI/CD, AI agents) | Security architect with the platform team |
 | Cloud configuration | Defender for Cloud secure score and recommendations, the corporate Azure Policy initiatives in `deny` with zero non-compliant resources (or approved exemptions), CIS AKS benchmark, IaC scanning in CI | Security team |
-| Identity and access | All role assignments in all subscriptions, PIM settings and break-glass accounts, no standing write access; workload identity federated credentials (issuer, subject per ServiceAccount); GitHub OIDC subjects per environment; AI agent identities read-only | Security team + identity team |
+| Identity and access | All role assignments in all subscriptions, PIM settings and break-glass accounts, no standing write access; workload identity federated credentials (issuer, subject per ServiceAccount); GitHub OIDC subjects per environment; AI agent identities read-only, full prototyping permissions removed and the derived roles compared with the logged actions | Security team + identity team |
 | Network | NSG and Firewall rule sets against [section 5](05-allowed-and-blocked-flows.md), FQDN allow-lists per zone, WAF policies, no unexpected public endpoints, the stateful cluster's "no Internet" exceptions | Network + security teams |
 | Penetration test | External: Internet → Front Door → `ext-*` zones. Internal: client VNet → NGINXaaS → `int-*` zones. **Assumed breach**: a compromised pod in each zone tries container escape, IMDS / token theft, lateral movement to other zones, cells, Key Vaults, the API server and the stateful cluster | Independent party |
 | Supply chain | Image sources and ACR import path, vulnerability scanning, image signatures / digests, Flux source verification, branch protection and required reviews, secret scanning of all repositories | Security team |
@@ -175,6 +180,8 @@ and the network team:
   version, with results stored.
 - All Azure Policy assignments are in production effect, with zero non-compliant resources or approved exemptions.
 - No open critical / high security findings.
+- No identity – human, pipeline or AI agent – has more than its designed permissions; the full permissions the agents
+  had during prototyping are gone.
 - The address plan matches the corporate IPAM reservation; the corporate Firewall / on-premises routing changes, DNS
   forwarding and ExpressRoute capacity are agreed with the network team.
 - Runbooks, on-call and the SOC onboarding are in place.
