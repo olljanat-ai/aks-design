@@ -93,13 +93,12 @@ Internet access to Let's Encrypt or write access to DNS.
   TLS-terminating applications in `sf`. A rebuilt cluster needs no new certificate, and Let's Encrypt rate limits are
   never an issue (a handful of certificates per environment).
 - **Access with plain Azure RBAC, no ABAC.** Key Vault RBAC roles can be assigned on a single certificate (its secret
-  object) instead of the whole vault. Every identity that needs a certificate gets **Key Vault Secrets User**
-  scoped to `kv-<env>-platform/secrets/cert-<zone>-…` of *its own zone*: each zone's Traefik with its own identity
-  `id-<zone>-gateway` (a platform component, which may use Key Vault directly), and for stateful applications and
-  any application with a client or server certificate the application's secret reader identity, used only by External
-  Secrets Operator ([section 6](06-workload-identity-and-secrets.md#delivered-only-by-external-secrets-operator)).
-  Key Vault exposes a certificate together with its private key as a secret of the same name, which is what is read.
-  Applications never call Key Vault themselves. No identity has a data-plane role on
+  object) instead of the whole vault. The secret reader identity ([section 6](06-workload-identity-and-secrets.md#delivered-only-by-external-secrets-operator))
+  of every namespace that needs a certificate – `<zone>-gateway` for the zone's Traefik (`id-<zone>-gateway-secrets`),
+  stateful applications, any application with a client or server certificate – gets **Key Vault Secrets User** scoped
+  to `kv-<env>-platform/secrets/cert-<zone>-…` of *its own zone*; only External Secrets Operator uses it. Key Vault
+  exposes a certificate together with its private key as a secret of the same name, which is what ESO reads. Neither
+  Traefik nor any application calls Key Vault itself. No identity has a data-plane role on
   the vault scope except the renewal job and the platform team (PIM); the clusters' control plane identities have Key
   Vault Contributor (management plane only) for KMS ([section 18](18-encryption-at-rest-and-customer-managed-keys.md#trade-off-cluster-identities-on-the-shared-platform-vault)). The role assignments are created by the
   environment IaC module from the application onboarding (a "needs certificate" flag), so a certificate must exist
@@ -109,9 +108,8 @@ Internet access to Let's Encrypt or write access to DNS.
   an `ExternalSecret` reads the certificate's secret object (PEM content type) through the namespace's platform-vault
   `SecretStore` and its template writes a `kubernetes.io/tls` Secret (`tls.crt` with the chain, `tls.key`). The
   refresh interval is 1 hour – a renewed certificate is in every cluster well within the 30-day renewal margin.
-  - Traefik: the `ExternalSecret` in `<zone>-gateway`, through a `SecretStore` that authenticates as Traefik's own
-    ServiceAccount, writes the Secret that the zone's `Gateway` listener references; Traefik reloads it when the
-    Secret changes.
+  - Traefik: the `ExternalSecret` in `<zone>-gateway` writes the Secret that the zone's `Gateway` listener
+    references; Traefik reloads it when the Secret changes.
   - Applications: the Secret is mounted as PEM files (no `subPath`) and the application reloads them on change.
 - Things to be aware of:
   - The parent domain must be a **registered public domain** – suffixes like `.internal`, `.local` or `.corp` cannot

@@ -19,10 +19,8 @@ No Gatekeeper is installed by Flux.
   in dev, then `deny`, then promoted to acc and prd with the rest of the platform change.
 - **Platform namespaces**: `kube-system` and `gatekeeper-system` are excluded by the add-on; `flux-system` and other
   platform namespaces are excluded from application rules through the definitions' namespace exclusion parameters.
-  `<zone>-gateway` is excluded only from the rules that Traefik itself must break (its `LoadBalancer` Service, the
-  application-only Key Vault and ESO rules – platform components may use Key Vault directly,
-  [section 6](06-workload-identity-and-secrets.md#platform-components-may-use-key-vault-directly)) – zone pinning
-  still applies to it. `<zone>-secrets` (External Secrets Operator) is a platform namespace pinned to its
+  `<zone>-gateway` is excluded only from the rules that Traefik itself must break (its `LoadBalancer` Service) – zone
+  pinning and the External Secrets Operator rules still apply to it. `<zone>-secrets` (External Secrets Operator) is a platform namespace pinned to its
   zone in the same way.
 
 Limits of the add-on and how the design handles them:
@@ -41,8 +39,8 @@ Limits of the add-on and how the design handles them:
 | `platform/arch` / `platform/capacity` labels: inject the architecture `nodeSelector` and the spot toleration + preferred affinity (mutation); reject unknown values, own `kubernetes.io/arch` / `karpenter.sh/capacity-type` selectors and spot tolerations without the label ([section 4](04-node-pools.md#cpu-architecture-and-spot-chosen-by-the-application)) | ✔ | all values | defaults only (`amd64`, `on-demand`) |
 | Images by digest from the environment's ACR only | ✔ | | |
 | ServiceAccount used by application pods carries the workload identity client ID and is not `secrets-reader`; no `imagePullSecrets` | ✔ | | |
-| Secrets only through External Secrets Operator ([section 6](06-workload-identity-and-secrets.md#delivered-only-by-external-secrets-operator)): in application namespaces, `Secret`s may be created or changed only by the zone's ESO controller ServiceAccount (`system:serviceaccount:<zone>-secrets:external-secrets`, checked on the admission request's user) – Helm release Secrets excepted; no `SecretProviderClass` and no `secrets-store.csi.k8s.io` volumes anywhere (platform namespaces included) | ✔ | | |
-| ESO objects in application namespaces: `SecretStore` only `azurekv` with the own zone vault or `kv-<env>-platform`, `authType: WorkloadIdentity`, `serviceAccountRef: secrets-reader`, `controller: <zone>`; `ExternalSecret` only against a `SecretStore` (not `ClusterSecretStore`), `remoteRef.key` / `dataFrom` names with the application's prefix or its `cert-<zone>-…`; `ClusterSecretStore`, `ClusterExternalSecret`, `PushSecret` platform only | ✔ | | |
+| Secrets only through External Secrets Operator ([section 6](06-workload-identity-and-secrets.md#delivered-only-by-external-secrets-operator)): in application namespaces and `<zone>-gateway`, `Secret`s may be created or changed only by the zone's ESO controller ServiceAccount (`system:serviceaccount:<zone>-secrets:external-secrets`, checked on the admission request's user) – Helm release Secrets excepted; no `SecretProviderClass` and no `secrets-store.csi.k8s.io` volumes anywhere (platform namespaces included) | ✔ | | |
+| ESO objects in application namespaces and `<zone>-gateway`: `SecretStore` only `azurekv` with the own zone vault or `kv-<env>-platform`, `authType: WorkloadIdentity`, `serviceAccountRef: secrets-reader`, `controller: <zone>`; `ExternalSecret` only against a `SecretStore` (not `ClusterSecretStore`), `remoteRef.key` / `dataFrom` names with the application's prefix or its `cert-<zone>-…`; `ClusterSecretStore`, `ClusterExternalSecret`, `PushSecret` platform only | ✔ | | |
 | Requests set, probes set, no privileged / hostNetwork / hostPath for applications | ✔ | | |
 | Egress out of the cluster only by FQDN: application `CiliumNetworkPolicy` egress limited to `toEndpoints`, in-cluster `toServices` and `toFQDNs` with ports (no `toCIDR`/`toCIDRSet`/`toEntities`); no bare or too broad wildcards; DNS rules only for declared names; no `NetworkPolicy` egress `ipBlock`; `CiliumClusterwideNetworkPolicy` and Cilium CIDR / egress gateway objects platform only; `dnsPolicy: ClusterFirst` ([section 16](16-advanced-networking-and-fqdn-egress.md)) | ✔ | | |
 | Cluster: Cilium dataplane, ACNS enabled, Azure Linux 3.0 on all node pools / `AKSNodeClass` `imageFamily: AzureLinux`; eBPF host routing (`BpfVeth`); Key Vault secrets provider (Secrets Store CSI) add-on disabled | ✔ | | |

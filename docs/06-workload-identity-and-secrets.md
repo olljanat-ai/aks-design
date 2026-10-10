@@ -32,8 +32,7 @@ storage account keys for Azure services.
   "Local auth disabled" is enforced with Azure Policy on the resources, so a key-based fallback cannot be switched
   on later. Application configuration contains only endpoints and client IDs, which are not secrets.
 - **Platform components use workload identity too**: Flux (`OCIRepository` `provider: azure`), the stateful
-  deployment pipeline (workload identity federation, no client secret), Traefik (its zone certificate), External
-  Secrets Operator (below), the Azure Monitor agent, external-dns. Unlike applications, platform components may use
+  deployment pipeline (workload identity federation, no client secret), External Secrets Operator (below), the Azure Monitor agent, external-dns. Unlike applications, platform components may use
   Key Vault directly with their own identity ([below](#platform-components-may-use-key-vault-directly)). Images are pulled
   with the kubelet identity, which has only `AcrPull` on the environment's ACR – no `imagePullSecrets`.
 
@@ -108,18 +107,19 @@ Azure Policy denies enabling it, its CRDs are not installed, and admission rejec
 
 ## Platform components may use Key Vault directly
 
-Platform components in platform namespaces (`<zone>-gateway`, `<zone>-secrets`, `flux-system`, monitoring) are owned,
+Platform components in platform namespaces (`<zone>-secrets`, `flux-system`, monitoring) are owned,
 reviewed and upgraded by the platform team, so they are not forced through ESO. Such a component may read Key Vault
 directly with **its own workload identity**, with a data-plane role scoped as narrowly as Key Vault allows (a single
 certificate or secret where possible), declared in the IaC module and reviewed with the platform change, and with the
 vault in its namespace's platform-owned egress policy. The Secrets Store CSI driver stays disabled for them too.
 
-- **Traefik** has its own identity `id-<zone>-gateway` with **Key Vault Secrets User** on its zone certificate
-  `kv-<env>-platform/secrets/cert-<zone>-wildcard` ([section 13](13-encryption-in-transit-and-tls.md#certificates-issued-centrally-distributed-through-the-platform-key-vault)).
-  Traefik has no native Key Vault provider, so the certificate is loaded into the `kubernetes.io/tls` Secret that
-  its `Gateway` listener references by a `SecretStore` in `<zone>-gateway` that authenticates **as Traefik's own
-  ServiceAccount** – no separate reader identity.
-- **External Secrets Operator** itself, Flux and the monitoring components follow the same rules: own identity, own
+- **Traefik uses ESO exactly like an application.** `<zone>-gateway` has the standard `secrets-reader`
+  ServiceAccount, federated to the reader identity `id-<zone>-gateway-secrets`, which has **Key Vault Secrets User**
+  on the zone certificate `kv-<env>-platform/secrets/cert-<zone>-wildcard` only
+  ([section 13](13-encryption-in-transit-and-tls.md#certificates-issued-centrally-distributed-through-the-platform-key-vault)).
+  Traefik's own identity has no Key Vault role, its egress policy names no vault, and the ESO rules of
+  [section 14](14-policy-enforcement.md) apply to `<zone>-gateway` as to any application namespace.
+- **External Secrets Operator** itself, Flux and the monitoring components follow the rules above: own identity, own
   narrow roles, egress policy owned by the platform.
 
 Trade-offs of delivering secrets as Kubernetes `Secret`s instead of CSI file mounts:
