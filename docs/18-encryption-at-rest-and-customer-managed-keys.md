@@ -49,9 +49,9 @@ zone the same way ([open questions](open-questions.md)).
   (`--kms-infrastructure-encryption`, versionless key, automatic rotation without re-encrypting the secrets) needs
   Kubernetes 1.33 or later, which every cluster already runs, but it is still preview. The platform switches to it
   when it is GA.
-- Applications should not put secrets in Kubernetes Secrets anyway ([section 6](06-workload-identity-and-secrets.md)).
-  What does end up in etcd (the synced Traefik certificate, Flux and platform Secrets) is encrypted with the
-  cluster's key.
+- Everything that ends up in etcd is encrypted with the cluster's key: the application secrets and certificates
+  delivered as Kubernetes Secrets by External Secrets Operator ([section 6](06-workload-identity-and-secrets.md#delivered-only-by-external-secrets-operator)),
+  the Traefik certificate, Flux and platform Secrets.
 
 ## Nodes: disk encryption set per cluster
 

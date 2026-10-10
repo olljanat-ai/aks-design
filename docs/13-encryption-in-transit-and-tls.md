@@ -52,8 +52,8 @@ rest with customer-managed keys is in [section 18](18-encryption-at-rest-and-cus
 - **The application handles TLS itself** (TLS 1.2+), which is an onboarding requirement for the stateful cluster: it
   terminates TLS on its listener and reloads the certificate on rotation. Most products that end up here (databases,
   brokers, search engines) support this natively.
-- The application uses the **same zone certificate from the platform Key Vault** as Traefik (see below), mounted as PEM files
-  through the Secrets Store CSI driver; it is reached under a name in the zone's domain, e.g.
+- The application uses the **same zone certificate from the platform Key Vault** as Traefik (see below), delivered by
+  External Secrets Operator as a `kubernetes.io/tls` Secret and mounted as PEM files; it is reached under a name in the zone's domain, e.g.
   `app-x.int-fi.prd.example.com`.
 - Clients in the stateless clusters connect with TLS and verify the name; plain-text ports are not allowed by the
   Firewall rules between frontend and backend.
@@ -78,7 +78,7 @@ Internet access to Let's Encrypt or write access to DNS.
   | acc | `kv-acc-platform` | the same names for `*.<zone>.acc.example.com` |
   | prd | `kv-prd-platform` | the same names for `*.<zone>.prd.example.com` |
 
-  The certificate *names* are identical in every environment, so the fleet manifests (`SecretProviderClass`) need
+  The certificate *names* are identical in every environment, so the fleet manifests (`SecretStore`, `ExternalSecret`) need
   only the vault name `kv-${ENV}-platform`, substituted from `cluster-vars`. An application that must not share the zone key gets its
   own certificate `cert-<zone>-<app>` in the same vault.
 - **One renewal job per environment** runs in the management network (scheduled pipeline or Container Apps job) with
@@ -93,19 +93,24 @@ Internet access to Let's Encrypt or write access to DNS.
   TLS-terminating applications in `sf`. A rebuilt cluster needs no new certificate, and Let's Encrypt rate limits are
   never an issue (a handful of certificates per environment).
 - **Access with plain Azure RBAC, no ABAC.** Key Vault RBAC roles can be assigned on a single certificate (its secret
-  object) instead of the whole vault. Every identity that needs a certificate – each zone's Traefik, stateful
-  applications, any application with a client or server certificate – gets **Key Vault Secrets User** scoped to
+  object) instead of the whole vault. The secret reader identity ([section 6](06-workload-identity-and-secrets.md#delivered-only-by-external-secrets-operator))
+  of every namespace that needs a certificate – `<zone>-gateway` for the zone's Traefik, stateful applications, any
+  application with a client or server certificate – gets **Key Vault Secrets User** scoped to
   `kv-<env>-platform/secrets/cert-<zone>-…` of *its own zone*. Key Vault exposes a certificate together with its
-  private key as a secret of the same name, which is what the Secrets Store CSI driver reads. No identity has a data-plane role on
+  private key as a secret of the same name, which is what External Secrets Operator reads. Neither Traefik nor any
+  application calls Key Vault itself. No identity has a data-plane role on
   the vault scope except the renewal job and the platform team (PIM); the clusters' control plane identities have Key
   Vault Contributor (management plane only) for KMS ([section 18](18-encryption-at-rest-and-customer-managed-keys.md#trade-off-cluster-identities-on-the-shared-platform-vault)). The role assignments are created by the
   environment IaC module from the application onboarding (a "needs certificate" flag), so a certificate must exist
   before it can be assigned – the module creates it with a short-lived self-signed placeholder (issuer `Self`) that
   the job replaces on its first run.
-- **Delivery and rotation** with the Secrets Store CSI driver (rotation enabled, 2-minute poll):
-  - Traefik: a `SecretProviderClass` in `<zone>-gateway` syncs the certificate into a `kubernetes.io/tls` Secret, which
-    the zone's `Gateway` listener references; Traefik reloads it when the Secret changes.
-  - Applications: the certificate and key are mounted as PEM files and the application reloads them on change.
+- **Delivery and rotation** with the zone's External Secrets Operator (the Secrets Store CSI driver is disabled):
+  an `ExternalSecret` reads the certificate's secret object (PEM content type) through the namespace's platform-vault
+  `SecretStore` and its template writes a `kubernetes.io/tls` Secret (`tls.crt` with the chain, `tls.key`). The
+  refresh interval is 1 hour – a renewed certificate is in every cluster well within the 30-day renewal margin.
+  - Traefik: the `ExternalSecret` in `<zone>-gateway` writes the Secret that the zone's `Gateway` listener
+    references; Traefik reloads it when the Secret changes.
+  - Applications: the Secret is mounted as PEM files (no `subPath`) and the application reloads them on change.
 - Things to be aware of:
   - The parent domain must be a **registered public domain** – suffixes like `.internal`, `.local` or `.corp` cannot
     get Let's Encrypt certificates.

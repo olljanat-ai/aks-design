@@ -1,21 +1,28 @@
 %% Workload identity first: applications authenticate to Azure services with Entra ID (no keys, local auth disabled).
-%% The zone Key Vault holds secrets only for targets without Entra ID, separated per application with RBAC + ABAC conditions.
+%% The zone Key Vault holds secrets only for targets without Entra ID. Applications never read it themselves:
+%% the zone's External Secrets Operator pulls with a per-application reader identity (RBAC + ABAC prefix condition)
+%% and writes Kubernetes Secrets. The Secrets Store CSI driver is disabled.
 %% Certificates live in the per-environment platform Key Vault, readable with plain RBAC scoped to single certificates.
 flowchart LR
-    subgraph ZONE["Zone int-fi (namespaces on node pool intfi)"]
+    subgraph ZONE["Zone int-fi (namespaces on the zone's nodes)"]
         direction TB
         subgraph NSA["ns: int-fi-app-a (no secrets)"]
             saA["ServiceAccount app-a<br/>azure.workload.identity/client-id"]
         end
         subgraph NSB["ns: int-fi-app-b (secret exception)"]
-            saB["ServiceAccount app-b<br/>azure.workload.identity/client-id"]
-            csiB["Secrets Store CSI<br/>mounted as files only"]
+            saB["ServiceAccount app-b<br/>(app pods, no Key Vault role)"]
+            rdB["ServiceAccount secrets-reader<br/>no pod may use it"]
+            esB["SecretStore (platform preset)<br/>+ ExternalSecret → Secret<br/>mounted as volume"]
+        end
+        subgraph NSE["ns: int-fi-secrets (platform)"]
+            eso["External Secrets Operator<br/>controllerClass int-fi<br/>only pods allowed to reach Key Vault"]
         end
     end
 
     subgraph ENTRA["Microsoft Entra ID"]
         miA["Managed identity id-int-fi-app-a<br/>federated credential per cluster:<br/>sl-az1, sl-az2, sf issuers<br/>subject system:serviceaccount:int-fi-app-a:app-a"]
-        miB["Managed identity id-int-fi-app-b<br/>federated credential per cluster<br/>(secret exception for one partner API)"]
+        miB["Managed identity id-int-fi-app-b<br/>data-plane roles on PaaS only"]
+        miBs["Managed identity id-int-fi-app-b-secrets<br/>federated to int-fi-app-b:secrets-reader"]
     end
 
     subgraph PAAS["Zone int-fi Azure services (local auth disabled)"]
@@ -37,38 +44,40 @@ flowchart LR
         certO["cert-ext-fi-wildcard, cert-int-se-…<br/>(other zones' certificates)"]
     end
 
-    tr["Traefik int-fi / stateful apps<br/>identities that need a certificate"]
-    raC["Key Vault Secrets User<br/>scope: kv-&lt;env&gt;-platform/secrets/cert-int-fi-wildcard<br/>(plain RBAC, no condition)"]
+    raC["Key Vault Secrets User<br/>scope: kv-&lt;env&gt;-platform/secrets/cert-int-fi-wildcard<br/>for the secrets-reader identities of int-fi-gateway<br/>and TLS-terminating apps (plain RBAC)"]
 
     ext["Third-party API<br/>(no Entra ID support)"]
 
-    raB["Key Vault Secrets User @ kv-&lt;env&gt;-int-fi<br/>condition: secret name StringStartsWith 'app-b-'"]
+    raB["Key Vault Secrets User @ kv-&lt;env&gt;-int-fi<br/>for id-int-fi-app-b-secrets<br/>condition: secret name StringStartsWith 'app-b-'"]
 
     saA -->|"projected token → Entra token"| miA
     miA -->|"contained db user"| sql
     miA -->|"Data Sender / Receiver"| sb
     miA -->|"Blob Data Reader"| st
-    csiB --> saB -->|"projected token → Entra token"| miB
+    saB -->|"projected token → Entra token"| miB
     miB -->|"data-plane roles"| sql
-    miB --> raB -->|"allow"| sB1
+    eso -->|"reconciles"| esB
+    eso -->|"token for secrets-reader"| rdB --> miBs
+    miBs --> raB -->|"allow"| sB1
     raB -.-x|"ForbiddenByRbac"| sX
-    csiB -.->|"app-b calls with the key"| ext
+    saB -.-x|"no role, Cilium blocks *.vault.azure.net,<br/>no CSI driver"| KV
+    esB -.->|"app-b calls with the key"| ext
 
     other["Other zones' identities<br/>(no role assignment in zone int-fi)"] -.-x|"denied"| PAAS
-    tr --> raC -->|"allow"| cert
+    eso --> raC -->|"allow"| cert
     raC -.-x|"no role on other certificates"| certO
-    linkStyle 9,11,14 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
+    linkStyle 11,12,14,17 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
 
     classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
     classDef id fill:#e8f5e9,stroke:#2e7d32,color:#000
     classDef note fill:#fffde7,stroke:#9e9d24,color:#000
     classDef paas fill:#eceff1,stroke:#455a64,color:#000
     classDef off fill:#ffebee,stroke:#c62828,color:#000
-    class saA,saB,csiB,sB1,sX int
-    class miA,miB id
+    class saA,saB,rdB,esB,sB1,sX int
+    class eso id
+    class miA,miB,miBs id
     class raB,raC note
     class cert int
     class certO paas
-    class tr id
     class sql,sb,st,ext paas
     class other off

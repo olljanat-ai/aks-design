@@ -31,6 +31,10 @@
   nodes created during scale-out use the pinned node image, not the newest one.
 - Key Vault ABAC is preview – acceptable for production, or fall back to vault per application until GA? (Affects only
   applications with a secret exception.)
+- External Secrets Operator per zone: confirm in prototyping that a controller can be limited to its zone's
+  namespaces (`controllerClass`, RoleBindings for `Secret` writes and `serviceaccounts/token`) – ESO's default
+  chart lists and watches `Secret`s cluster-wide. ESO is a community project (CNCF), not an AKS add-on: is the
+  platform team's own patching of it acceptable, or is commercial support needed?
 - Which application stacks lack Entra ID support in their drivers/SDKs, and are they upgraded or given a secret
   exception?
 - Two or three stateless clusters per environment? Two is the minimum, but then each must carry 100 % of the load and

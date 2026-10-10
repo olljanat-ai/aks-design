@@ -12,8 +12,8 @@ fleet/
 │   ├── acc/{sl-az1,sl-az2}/
 │   └── prd/{sl-az1,sl-az2,sl-az3}/
 ├── infrastructure/
-│   ├── base/                      # Cilium baseline policies + FQDN egress presets, Secrets Store CSI settings, monitoring
-│   ├── stateless/                 # NAP NodePool + AKSNodeClass per zone, Traefik + Gateways + certificate SecretProviderClass per zone, KEDA
+│   ├── base/                      # Cilium baseline policies + FQDN egress presets, External Secrets Operator per zone, monitoring
+│   ├── stateless/                 # NAP NodePool + AKSNodeClass per zone, Traefik + Gateways + certificate ExternalSecret per zone, KEDA
 │   └── stateful/                  # storage classes (ZRS), operators (no Gateway API) – applied by the pipeline
 └── apps/
     └── <app>/
