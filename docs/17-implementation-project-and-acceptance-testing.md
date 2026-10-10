@@ -63,55 +63,6 @@ Phases 3 and 4 run on the same dev environment and overlap in time; any finding 
 the affected tests are run again. The requirement tests of phase 2 stay in the pipelines and run after every
 platform change for the rest of the platform's life.
 
-## Effort estimate: one engineer + Claude
-
-A rough estimate for **one experienced platform engineer (Azure, AKS, Flux, IaC) working full time with Claude Code**,
-which writes most of the IaC, Flux manifests, policy definitions, pipelines, tests and documentation, while the
-engineer decides, reviews every change and does what needs a human (tenant and quota requests, Microsoft support
-cases, meetings with the security and network teams). Claude runs in the build tenant with the full permissions
-described [above](#build-tenant).
-
-| Work package | Phase | Weeks |
-|---|---|---|
-| Build tenant, management VNet and hub (Firewall, Private DNS, Bastion), client VNet, pipelines with OIDC, policy assignments in audit | 1 | 2 |
-| Stateless cluster module: private cluster with API Server VNet Integration, UDR egress, address spaces and subnets per zone, NAP `NodePool`s (amd64 / arm64, spot), ACNS with eBPF host routing, VNet encryption | 2 | 3 |
-| Fleet repository and Flux bootstrap: `cluster-vars`, platform base, zone and application onboarding templates, the policies-in-sync gate | 2 | 2 |
-| Workload identity, zone Key Vaults with ABAC, CSI driver, PaaS reference services with Entra-only auth | 2 | 1 |
-| Traefik Gateway API per zone, certificate renewal job, platform Key Vault | 2 | 1.5 |
-| Traffic layer: Front Door with WAF and Private Link, NGINXaaS, cell affinity, cell drain / return automation | 2 | 3 |
-| Azure Policy: built-in initiatives, ~15 custom definitions and mutations ([section 14](14-policy-enforcement.md)), `gator verify` tests | 2 | 2.5 |
-| FQDN egress: baseline, presets, CI check against the zone Firewall allow-lists | 2 | 1 |
-| Upgrade automation: update policy timetable, drain-upgrade-return pipeline, node image pinning | 2 | 2 |
-| Monitoring, alerts, dashboards, runbooks | 2 | 1.5 |
-| AI agents, guardrails repository, merge gate and risk tiers; least-privilege roles derived from the logs | 2 | 3 |
-| Requirement and isolation tests R1–R20, reference application | 2 | 1.5 |
-| Open questions: experiments, Microsoft support confirmations, rework when a preview feature does not work as documented | 2 | 3 |
-| Acceptance testing: load and chaos tooling, test runs (incl. the 72 h soak and the rebuild), fixes and re-runs | 3 | 5 |
-| Security reviews: preparing material, fixing findings, re-tests (the reviews themselves run in parallel with phase 3) | 4 | 2 |
-| Corporate tenant: deploy dev, corporate integration tests, acc and prd | 5 | 4 |
-| **Total without the stateful cluster** | | **≈ 38 weeks** |
-| Stateful cluster, if needed: module and pipeline, LTS, zone node pools, backup / restore, AZ-by-AZ upgrade, its tests | 2–3 | +5 |
-
-**Calendar time: about 9–10 months from an empty build tenant to the connection readiness gate, and about 11–12
-months to prd**, plus ~1 month if the stateful cluster is built. The range is wide; a realistic spread is −20 % /
-+40 %, the upside risk coming mostly from things Claude cannot speed up:
-
-- **Waiting on Azure and Microsoft**: preview features (NAP with custom subnets, eBPF host routing with VNet
-  encryption, Key Vault ABAC) that turn out unsupported in a combination or region, support cases, quota requests,
-  and slow provisioning (Firewall, Front Door, NGINXaaS and cluster creation take tens of minutes per iteration).
-- **Other teams**: corporate IPAM reservation, landing zone exemptions, security review and penetration test
-  scheduling (an external pen test typically needs 2–4 weeks lead time), network changes for the connection,
-  change approvals in the corporate tenant.
-- **One reviewer**: everything Claude produces is reviewed by the same person, which caps throughput; long
-  absences stop the project.
-- **Tests that take wall-clock time**: soak tests, upgrade rehearsals per update speed, chaos runs repeated after
-  fixes.
-
-What Claude speeds up most is the code-heavy work – IaC modules, policy definitions and their tests, Flux
-manifests, pipelines, test suites, runbooks and keeping these documents in sync with what was built – which is
-roughly two thirds of the effort above. Estimating the same scope without Claude at roughly 2–3× the engineering
-weeks, a single engineer alone would not be realistic; the usual alternative is a team of three to four.
-
 ## Acceptance tests in dev
 
 A **reference application** is deployed into every isolation zone of every cell before acceptance starts: an HTTP API
