@@ -10,8 +10,11 @@ Each application gets its own namespace(s) inside a zone, with a baseline policy
    only from the node subnets of the same zone in the stateless clusters (Cilium CIDR policy; the applications'
    `LoadBalancer` Services use `externalTrafficPolicy: Local` so the client IP is preserved);
 4. allow traffic within the namespace;
-5. allow egress only to the zone Key Vault private endpoint, the platform Key Vault private endpoint (only pods that
-   need a certificate) and approved FQDNs (via firewall).
+5. no egress out of the cluster by default: **the application must declare every external destination by FQDN** in
+   its own `CiliumNetworkPolicy` `egress` – zone Key Vault, platform Key Vault (only pods that need a certificate),
+   Entra ID, PaaS private endpoints, stateful cluster services and approved Internet names (which must also be on the
+   zone's Firewall allow-list); CIDR-based egress is rejected by Azure Policy
+   ([section 16](16-advanced-networking-and-fqdn-egress.md)).
 
 Applications in the same zone therefore cannot talk to each other unless an explicit policy pair is agreed.
 Kubernetes RBAC is namespace-scoped (Entra ID groups per application team), plus ResourceQuota/LimitRange per

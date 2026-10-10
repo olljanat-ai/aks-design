@@ -10,14 +10,18 @@ Only the flows Kubernetes needs to function are allowed between a workload zone 
 | ② | `snet-apiserver` | Zone nodes | TCP 10250 | logs, exec, port-forward |
 | ③ | Zone pods | CoreDNS (system pods) | UDP/TCP 53 | name resolution |
 | ④ | metrics-server (system pods) | Zone nodes | TCP 10250 | resource metrics |
-| ⑤ | Zone pods | Own zone Key Vault PE | TCP 443 | secrets (only applications that need one) |
+| ⑤ | Zone pods | Own zone Key Vault PE | TCP 443 | secrets (only applications that need one and declare the vault in their FQDN egress policy) |
 | ⑤b | Zone pods that need a certificate (Traefik, TLS-terminating apps) | Platform Key Vault PE in `snet-platform-pe` | TCP 443 | certificates; Cilium policy allows only these pods, RBAC only their zone's certificates |
-| ⑥ | Zone nodes + pods | Azure Firewall | per FQDN | AKS required FQDNs, MCR, Entra ID (workload identity token exchange), Azure Monitor |
+| ⑥ | Zone nodes + pods | Azure Firewall | per FQDN | AKS required FQDNs, MCR, Entra ID (workload identity token exchange), Azure Monitor; pods only to the FQDNs of their application's egress policy |
 | ⑦ | Zone nodes | All nodes | TCP 4240, ICMP | Cilium health (optional) |
 | – | AzureLoadBalancer | `snet-apiserver` | TCP 9988 | API server health probe |
 
 **Everything else between zones is blocked** – pod-to-pod, pod-to-other-zone Key Vault and direct Internet –
 enforced three times: NSG (L3/L4), Azure Firewall (L3–L7, logged), Cilium cluster-wide policy (pod identity).
+
+Inside the allowed flows, a pod reaches a destination outside the cluster only if its application has declared that
+destination by **FQDN** in its own Cilium egress policy ([section 16](16-advanced-networking-and-fqdn-egress.md)): the
+Firewall decides what a *zone* may reach, the FQDN policy what an *application* may reach.
 
 ---
 

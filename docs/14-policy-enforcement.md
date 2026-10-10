@@ -40,6 +40,8 @@ Limits of the add-on and how the design handles them:
 | ServiceAccount used by application pods carries the workload identity client ID; no `imagePullSecrets` | ✔ | | |
 | No `Opaque` / basic-auth / docker-config `Secret`s in application namespaces (Helm release secrets allowed); `secretObjects` in `SecretProviderClass` only for the `kubernetes.io/tls` certificate in `<zone>-gateway` | ✔ | | |
 | Requests set, probes set, no privileged / hostNetwork / hostPath for applications | ✔ | | |
+| Egress out of the cluster only by FQDN: application `CiliumNetworkPolicy` egress limited to `toEndpoints`, in-cluster `toServices` and `toFQDNs` with ports (no `toCIDR`/`toCIDRSet`/`toEntities`); no bare or too broad wildcards; DNS rules only for declared names; no `NetworkPolicy` egress `ipBlock`; `CiliumClusterwideNetworkPolicy` and Cilium CIDR / egress gateway objects platform only; `dnsPolicy: ClusterFirst` ([section 16](16-advanced-networking-and-fqdn-egress.md)) | ✔ | | |
+| Cluster: Cilium dataplane, ACNS enabled, Azure Linux 3.0 on all node pools / `AKSNodeClass` `imageFamily: AzureLinux`; eBPF host routing (`BpfVeth`) | ✔ | `BpfVeth` | `BpfVeth` from the first LTS minor ≥ 1.33 |
 | Replica and rollout guardrails (PDB existence: CI check) of [section 11](11-zero-downtime-application-upgrades.md) | ✔ | ≥ 2 replicas | ≥ 3 replicas, zone spread |
 | Reject `PersistentVolumeClaim` | | ✔ | |
 | NAP `NodePool` / `AKSNodeClass`: subnet, `platform/zone` label, taint and AZ of its zone; only allowed VNet-encryption-capable VM sizes (amd64 and arm64); a spot `NodePool` must carry the `platform/capacity=spot:NoSchedule` taint | | ✔ | |

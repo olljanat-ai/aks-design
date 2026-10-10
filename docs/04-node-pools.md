@@ -30,6 +30,8 @@ NAP details in the stateless clusters:
 - NAP is enabled with `--node-provisioning-mode Auto`; the AKS-created default `NodePool`s are disabled
   (`--node-provisioning-default-pools None`), so every NAP node belongs to a zone's `NodePool`. NAP requires Azure CNI
   Overlay powered by Cilium, which the stateless clusters use anyway. The cluster autoscaler is not used anywhere.
+- All nodes run **Azure Linux 3.0** (`AKSNodeClass` `imageFamily: AzureLinux`, system pool `--os-sku AzureLinux`),
+  which eBPF host routing requires on every node of the cluster ([section 16](16-advanced-networking-and-fqdn-egress.md)).
 - Several SKU families in each allow-list lower the risk that the cell's single AZ runs out of capacity for one VM size
   when a cell is pre-scaled to carry the full load ([section 12](12-zero-downtime-cluster-upgrades.md#stateless-clusters)).
 - Disruption budgets keep consolidation slow (e.g. at most 10 % of a zone's nodes at a time) and block it while a cell

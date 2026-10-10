@@ -1,0 +1,49 @@
+%% Advanced Container Networking Services in every cluster: eBPF host routing on the node, and per-application
+%% FQDN egress policies enforced by Cilium + the ACNS security agent (DNS proxy). Azure Firewall is the zone-level outer layer.
+flowchart LR
+    subgraph NODE["Zone node int-fi · Azure Linux 3.0 · ACNS · eBPF host routing (no host iptables)"]
+        direction TB
+        subgraph APP["ns: int-fi-orders"]
+            pod["orders pod"]
+            pol["CiliumNetworkPolicy egress<br/>(owned by the application)<br/>toFQDNs + ports, DNS rule for the same names"]
+        end
+        base["Baseline CiliumClusterwideNetworkPolicy<br/>(platform): DNS *.cluster.local, own namespace<br/>→ default deny for everything else"]
+        cilium["Cilium eBPF datapath<br/>policy · routing · masquerade"]
+        dnsp["ACNS security agent<br/>(DNS proxy)"]
+    end
+
+    subgraph SYS["kube-system"]
+        coredns["CoreDNS → hub Private DNS"]
+    end
+
+    fw["Azure Firewall<br/>zone allow-list (sees the zone only)"]
+
+    subgraph DEST["Declared destinations"]
+        direction TB
+        entra["login.microsoftonline.com"]
+        kv["kv-prd-int-fi.vault.azure.net<br/>(private endpoint)"]
+        pg["psql-…postgres.database.azure.com<br/>(private endpoint)"]
+        sf["search.int-fi.prd.example.com<br/>(stateful cluster ILB)"]
+    end
+
+    other["Undeclared name or raw IP<br/>e.g. other zone's vault, Internet"]:::off
+
+    pod -->|"DNS query"| dnsp -->|"allowed names only"| coredns
+    dnsp -->|"FQDN → IP mappings"| cilium
+    pol -.->|"applied by"| cilium
+    base -.->|"applied by"| cilium
+    pod --> cilium -->|"declared FQDN + port"| fw
+    fw --> entra & kv & pg & sf
+    cilium x-.-x|"⛔ dropped by Cilium<br/>(and by the Firewall if not on the zone list)"| other
+
+    linkStyle 11 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
+
+    classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
+    classDef note fill:#fffde7,stroke:#f9a825,color:#000
+    classDef off fill:#ffebee,stroke:#c62828,color:#000,stroke-dasharray: 5 5
+    class pod int
+    class pol,base note
+    class cilium,dnsp,coredns,entra,kv,pg,sf cp
+    class fw hub

@@ -4,7 +4,8 @@
   blast radius / hard network boundary.
 - Can the corporate IP plan reserve a `/12` per environment for the platform (or a `/17` per country if not), and
   is the platform the owner of these prefixes in the central IPAM?
-- Is CoreDNS on the shared system pool acceptable, or should each zone run its own DNS (e.g. NodeLocal DNS)?
+- Is CoreDNS on the shared system pool acceptable, or should each zone run its own CoreDNS? (The standard NodeLocal
+  DNS setup needs host iptables rules and does not fit eBPF host routing, see [section 16](16-advanced-networking-and-fqdn-egress.md).)
 - One Front Door profile per environment with a WAF policy per external zone (current draft), or a profile per zone?
 - Release cadence: is one fleet release train per environment and day (or a few) fast enough, given that each cell
   costs a drain, rollout, tests and a return ramp? Which applications need a faster path?
@@ -52,9 +53,20 @@
 - Risk tiers: may tier-low changes (patches per timetable, digest promotion that passed acc, limits inside
   `limits.yaml`) really merge to prd without a human, or does every prd change need one human at first? Who owns
   `limits.yaml` – platform team alone, or platform + security?
+- eBPF host routing: confirm with Microsoft that it is supported together with Azure Virtual Network encryption,
+  node auto provisioning, API Server VNet Integration, outbound type `userDefinedRouting` and – for the stateful
+  cluster – network isolated clusters, Azure CNI with a pod subnet and LTS; and that every platform DaemonSet
+  (monitoring agent, Defender sensor, CSI drivers) works without host iptables rules. Which LTS minor ≥ 1.33 will the
+  stateful cluster move to, and when?
+- FQDN egress: is the ACNS FQDN-filtering throughput (~1 000 DNS-proxied requests per second per pod) enough for the
+  busiest applications, or do some need a documented exception? Do applications accept declaring Entra ID and their
+  zone Key Vault themselves (current draft, via presets), or should the platform baseline allow them for every
+  workload-identity pod?
+- Who approves a new Internet FQDN for a zone's Firewall allow-list (security team per request, or a pre-approved
+  catalogue of common SaaS / package endpoints)?
 - Git platform: GitHub (organisation rulesets, required workflows, GitHub Apps) as in the draft, or Azure DevOps with
   branch policies and build validation?
 
 ---
 
-[Back to contents](../README.md) · Previous: [15. AI-driven day 2 operations](15-ai-driven-day-2-operations.md) · Next: [Editing the pictures](editing-the-pictures.md)
+[Back to contents](../README.md) · Previous: [16. Advanced networking: eBPF host routing and FQDN egress](16-advanced-networking-and-fqdn-egress.md) · Next: [Editing the pictures](editing-the-pictures.md)
