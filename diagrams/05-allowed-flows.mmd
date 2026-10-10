@@ -34,7 +34,7 @@ flowchart LR
     p -->|"③ UDP/TCP 53"| dns
     ms -->|"④ TCP 10250 metrics"| n
     eso -->|"⑤ TCP 443<br/>ESO only, no app pods"| kv
-    eso -->|"⑤b TCP 443<br/>ESO only"| pkv
+    eso -->|"⑤b TCP 443<br/>ESO + platform components (Traefik)"| pkv
     api -->|"TCP 443 KMS key<br/>(own cluster's key only)"| pkv
     Z -->|"⑥ all egress via UDR"| fw
     fw -->|"FQDN allow-list"| azure
