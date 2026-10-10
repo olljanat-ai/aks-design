@@ -16,6 +16,7 @@ run different kinds of workloads:
 | Scaling | Nodes are created for pending pods and removed or consolidated when they are empty or under-used; the `NodePool` `limits` (CPU, memory) are the upper bound, sized for N+1 | **No autoscaling.** Fixed node count per pool, set in IaC; capacity changes are planned changes |
 | Node replacement | Drift (new node image or Kubernetes version), consolidation and `expireAfter`, limited by the `NodePool` disruption budgets; PDBs are respected | Surge upgrade per pool, one AZ at a time ([section 12](12-zero-downtime-cluster-upgrades.md#stateful-cluster)) |
 | Defined by | Flux, in `infrastructure/stateless` (subnet IDs and AZ from the `cluster-vars` ConfigMap), applied before anything that runs on zone nodes | Cluster IaC |
+| Disk encryption | Cluster's disk encryption set (`key-<cluster>-disk`) on the ephemeral OS disks; `security.encryptionAtHost: true` in every `AKSNodeClass` | Cluster's disk encryption set on the OS disks, `--enable-encryption-at-host`; persistent volumes with the zone's own key ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)) |
 | System pool | Classic node pool `system`, fixed node count, pinned to the cell's AZ | Classic node pool `system`, fixed node count, spread over AZ 1–3 |
 
 **Why two models.** Stateless workloads scale on load all day and can be moved at any time, so NAP fits them: it
@@ -66,7 +67,8 @@ How the platform handles them:
   application that did not choose spot away from spot nodes, also from spot nodes that already exist and have room.
 - **Allow-lists per architecture**: the SKU allow-list holds amd64 families (e.g. Dsv5/Dsv6, Esv5/Esv6) and arm64
   families (e.g. Dpsv6/Epsv6, Cobalt 100) – only those that support VNet encryption, because it is the only encryption
-  between nodes ([section 13](13-encryption-in-transit-and-tls.md)). The spot `NodePool` uses the same allow-list:
+  between nodes ([section 13](13-encryption-in-transit-and-tls.md)), and encryption at host, which every node has
+  ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)). The spot `NodePool` uses the same allow-list:
   several families per architecture also give spot more places to find capacity.
 - **Capacity and N+1**: the on-demand `NodePool` limits alone are sized for N+1 (one cell carrying the whole
   environment), because spot capacity can disappear exactly when a cell is pre-scaled. The spot `NodePool` limits cap

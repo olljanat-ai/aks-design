@@ -15,6 +15,7 @@ Only the flows Kubernetes needs to function are allowed between a workload zone 
 | ⑥ | Zone nodes + pods | Azure Firewall | per FQDN | AKS required FQDNs, MCR, Entra ID (workload identity token exchange), Azure Monitor; pods only to the FQDNs of their application's egress policy |
 | ⑦ | Zone nodes | All nodes | TCP 4240, ICMP | Cilium health (optional) |
 | – | AzureLoadBalancer | `snet-apiserver` | TCP 9988 | API server health probe |
+| – | `snet-apiserver` | Platform Key Vault private endpoint created by AKS for KMS | TCP 443 | etcd encryption with the cluster's KMS key ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)) |
 
 **Everything else between zones is blocked** – pod-to-pod, pod-to-other-zone Key Vault and direct Internet –
 enforced three times: NSG (L3/L4), Azure Firewall (L3–L7, logged), Cilium cluster-wide policy (pod identity).

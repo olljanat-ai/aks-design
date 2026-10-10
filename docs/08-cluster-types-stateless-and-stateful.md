@@ -44,7 +44,7 @@ stateful cluster runs, the smaller its blast radius and upgrade risk.
 | Kubernetes version | Standard support, two speeds: `sl-az1` on the second latest GA minor (N-1), `sl-az2` (and `sl-az3`) one minor behind (N-2) ([update policy](12-zero-downtime-cluster-upgrades.md#update-policy)) | [Long Term Support](https://learn.microsoft.com/en-us/azure/aks/long-term-support) (`--tier premium --k8s-support-plan AKSLongTermSupport`): created on the second latest GA minor (N-1), then kept on that minor until 6 months before its LTS ends |
 | Tier | Standard | Premium (required for LTS) |
 | Scaling | ≥ 2 replicas per app, HPA / KEDA on load, NAP adds and removes nodes; **each cluster sized to carry 100 % of the load alone** (NAP `NodePool` limits) | ≥ 3 replicas per StatefulSet, one per AZ; **no autoscaling** – fixed node count per pool, sized when an exception is onboarded and changed as a planned IaC change |
-| Storage | None – admission policy rejects PersistentVolumeClaims; ephemeral OS disks | Azure Disk `Premium_ZRS` / `StandardSSD_ZRS`, Azure Files ZRS; prefer PaaS for databases |
+| Storage | None – admission policy rejects PersistentVolumeClaims; ephemeral OS disks | Azure Disk `Premium_ZRS` / `StandardSSD_ZRS`, Azure Files ZRS, through per-zone StorageClasses encrypted with the zone's own key ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)); prefer PaaS for databases |
 | Upgrade model | Drain from traffic, upgrade or rebuild, return ([picture 11](12-zero-downtime-cluster-upgrades.md#stateless-clusters)) | In place, one AZ at a time, PDB-protected ([picture 12](12-zero-downtime-cluster-upgrades.md#stateful-cluster)) |
 
 **Isolation zones are kept in both cluster types.** Each stateless and the stateful cluster have the nodes,
@@ -207,7 +207,9 @@ dev → acc → prd, and the existing zones only get new routes and Firewall rul
 3. **Subnets, NSGs, route tables** for the new zones; add a route for each new address space to the existing zones'
    route tables (and the reverse). Give the cluster identity *Network Contributor* on the new subnets.
 4. **Firewall and on-premises:** new rules for the new zone prefixes (IP groups); the existing rules do not change.
-5. **Environment module:** zone Key Vaults, private endpoints, managed identities, certificate in the platform Key Vault.
+5. **Environment module:** zone Key Vaults, private endpoints, managed identities, certificate in the platform Key Vault;
+   in the stateful cluster also the zones' persistent volume keys, disk encryption sets, storage accounts and
+   StorageClasses ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)).
 6. **Nodes:** in the stateless clusters, NAP `NodePool`s and `AKSNodeClass`es `intxx` / `extxx` for the new subnets
    (Flux, with the new subnet IDs in `cluster-vars`); in the stateful cluster, node pools `intxxz1`–`z3` /
    `extxxz1`–`z3` (`--vnet-subnet-id`, `--pod-subnet-id`, fixed node count). Neither restarts existing nodes.

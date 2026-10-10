@@ -72,7 +72,17 @@
   corporate network instead?
 - Acceptance targets: latency, error budget, failover time, RPO / RTO and prd peak load for the reference
   application – who sets them, and who signs off the connection readiness gate?
+- Customer-managed keys ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)): ask Microsoft whether a
+  disk encryption set per node pool or per `AKSNodeClass` is planned, so the OS-disk key can follow the requirement
+  of a key per node pool (today one per cluster). Confirm that NAP nodes use the cluster's disk encryption set and
+  encryption at host, that ephemeral OS disks with encryption at host use the customer-managed key, and in which
+  subnet AKS places the private endpoint it creates to the platform vault for KMS (`snet-apiserver` is a /28).
+- Is Key Vault Contributor on the platform vault for every cluster's control plane identity (needed by KMS with a
+  private vault) acceptable, or do the keys move to a separate `kv-<env>-keys` vault per environment? Do the keys
+  have to be HSM-protected (Key Vault Premium or Managed HSM)? Is a 12-month rotation enough?
+- KMS data encryption (versionless key, automatic rotation, no re-encryption of Secrets) is preview: switch to it when
+  it is GA, or earlier in dev?
 
 ---
 
-[Back to contents](../README.md) · Previous: [17. Implementation project and acceptance testing](17-implementation-project-and-acceptance-testing.md) · Next: [Editing the pictures](editing-the-pictures.md)
+[Back to contents](../README.md) · Previous: [18. Encryption at rest with customer-managed keys](18-encryption-at-rest-and-customer-managed-keys.md) · Next: [Editing the pictures](editing-the-pictures.md)

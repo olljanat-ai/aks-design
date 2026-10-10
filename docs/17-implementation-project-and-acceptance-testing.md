@@ -165,7 +165,7 @@ in the build tenant with all policies in `deny`.
 | Network | NSG and Firewall rule sets against [section 5](05-allowed-and-blocked-flows.md), FQDN allow-lists per zone, WAF policies, no unexpected public endpoints, the stateful cluster's "no Internet" exceptions | Network + security teams |
 | Penetration test | External: Internet → Front Door → `ext-*` zones. Internal: client VNet → NGINXaaS → `int-*` zones. **Assumed breach**: a compromised pod in each zone tries container escape, IMDS / token theft, lateral movement to other zones, cells, Key Vaults, the API server and the stateful cluster | Independent party |
 | Supply chain | Image sources and ACR import path, vulnerability scanning, image signatures / digests, Flux source verification, branch protection and required reviews, secret scanning of all repositories | Security team |
-| Data protection | Encryption in transit verified (VNet encryption on the node links, TLS-only listeners), encryption at rest (CMK if required), data residency per country zone | Security + privacy |
+| Data protection | Encryption in transit verified (VNet encryption on the node links, TLS-only listeners), encryption at rest with customer-managed keys verified per cluster and zone ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)): KMS and disk encryption set on every cluster, encryption at host on every node, per-zone StorageClasses only; a key rotation and a key revocation (disable, recover) rehearsed in dev; data residency per country zone | Security + privacy |
 | Detection and response | Defender for Containers and Defender for Cloud alerts reach the SOC tooling; the pen test's activity was detected | SOC |
 
 Findings: **critical and high must be fixed and re-tested before the gate**; medium findings need an owner and a
@@ -206,4 +206,4 @@ that is not needed.
 
 ---
 
-[Back to contents](../README.md) · Previous: [16. Advanced networking: eBPF host routing and FQDN egress](16-advanced-networking-and-fqdn-egress.md) · Next: [Open questions](open-questions.md)
+[Back to contents](../README.md) · Previous: [16. Advanced networking: eBPF host routing and FQDN egress](16-advanced-networking-and-fqdn-egress.md) · Next: [18. Encryption at rest with customer-managed keys](18-encryption-at-rest-and-customer-managed-keys.md)

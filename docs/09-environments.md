@@ -26,7 +26,8 @@ smaller stateful node pools.
   and what must survive a cluster rebuild: the Key Vaults per zone (with the application secrets), the platform Key
   Vault (with the environment's certificates and their role assignments), the application managed identities, the
   ACR and the Azure Policy assignments. Two cluster modules (stateless, stateful) with `env` and `az` as parameters
-  create the VNet, cluster, system pool (and, in the stateful cluster, the zone node pools), private endpoints to the shared zone and platform Key Vaults, the federated
+  create the cluster's customer-managed keys in the platform Key Vault, its control plane identity and disk encryption set
+  ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)), the VNet, cluster, system pool (and, in the stateful cluster, the zone node pools), private endpoints to the shared zone and platform Key Vaults, the federated
   credentials and – in stateless clusters – the Flux bootstrap. The IaC also writes a
   `cluster-vars` ConfigMap (`ENV`, `CLUSTER_TYPE`, `AZ`, `CLUSTER_NAME`, the zones' node subnet IDs) that Flux uses for substitutions (the
   stateful pipeline sets the same variables itself).

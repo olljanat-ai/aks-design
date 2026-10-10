@@ -15,6 +15,7 @@ flowchart LR
             pls["Private Link Service"]
             ilb["API server ILB VIP<br/>snet-apiserver /28"]
             sys["System node pool<br/>(CriticalAddonsOnly taint)"]
+            pkv["Platform Key Vault kv-&lt;env&gt;-platform<br/>key-&lt;cluster&gt;-kms<br/>(private endpoint created by AKS)"]
         end
         subgraph WL["Workload zones (int-fi, int-se, ext-fi, ext-se)"]
             nodes["Zone nodes<br/>(NAP NodePools / node pools)<br/>kubelet"]
@@ -28,6 +29,7 @@ flowchart LR
     nodes -->|"TCP 443, 4443<br/>(direct to ILB IP, no DNS)"| ilb
     ilb -->|"TCP 10250 kubelet<br/>+ webhook / aggregated API pods"| sys
     ilb -->|"TCP 10250 kubelet<br/>(logs, exec, port-forward)"| nodes
+    ilb -->|"TCP 443 KMS<br/>etcd encryption (CMK)"| pkv
 
     pub["Public API endpoint"]:::off
     pub -.-x|"disabled<br/>(private cluster)"| ilb
@@ -35,5 +37,5 @@ flowchart LR
     classDef off fill:#ffebee,stroke:#c62828,color:#000,stroke-dasharray: 5 5
     classDef cp fill:#eceff1,stroke:#455a64,color:#000
     classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
-    class pls,ilb,sys cp
+    class pls,ilb,sys,pkv cp
     class admins,ci,pe,dns hub

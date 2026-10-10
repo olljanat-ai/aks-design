@@ -34,11 +34,12 @@ flowchart LR
     ms -->|"④ TCP 10250 metrics"| n
     p -->|"⑤ TCP 443"| kv
     p -->|"⑤b TCP 443<br/>certificate consumers only"| pkv
+    api -->|"TCP 443 KMS key<br/>(own cluster's key only)"| pkv
     Z -->|"⑥ all egress via UDR"| fw
     fw -->|"FQDN allow-list"| azure
     Z x-.-x|"⛔ BLOCKED<br/>NSG + Firewall + Cilium policy<br/>(only ⑦ Cilium health TCP 4240 node↔node, optional)"| O
 
-    linkStyle 8 stroke:#c62828,stroke-width:3px,stroke-dasharray:6 4
+    linkStyle 9 stroke:#c62828,stroke-width:3px,stroke-dasharray:6 4
 
     classDef cp fill:#eceff1,stroke:#455a64,color:#000
     classDef int fill:#e3f2fd,stroke:#1565c0,color:#000

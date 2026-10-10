@@ -15,7 +15,9 @@ encrypted; picture 15 shows how AI agents operate the platform through pull requ
 picture 16 shows how every cluster uses **Advanced Container Networking Services** with **eBPF host routing**, and
 how applications may send traffic out of a cluster only to destinations they have declared in an **FQDN-based egress
 policy**. Picture 17 shows how the platform is built and accepted in a separate **build tenant** that is not connected
-to the corporate network, before the accepted version is deployed to the corporate landing zone.
+to the corporate network, before the accepted version is deployed to the corporate landing zone. Picture 18 shows how data at rest is encrypted with **customer-managed keys** from
+the platform Key Vault: one key per control plane and per cluster's node disks, and one per isolation zone for
+persistent volumes.
 
 > Status: **draft** for review. Country codes `fi` / `se` and all IP ranges are examples.
 
@@ -39,5 +41,6 @@ to the corporate network, before the accepted version is deployed to the corpora
 - [15. AI-driven day 2 operations](docs/15-ai-driven-day-2-operations.md)
 - [16. Advanced networking: eBPF host routing and FQDN egress](docs/16-advanced-networking-and-fqdn-egress.md)
 - [17. Implementation project and acceptance testing](docs/17-implementation-project-and-acceptance-testing.md)
+- [18. Encryption at rest with customer-managed keys](docs/18-encryption-at-rest-and-customer-managed-keys.md)
 - [Open questions](docs/open-questions.md)
 - [Editing the pictures](docs/editing-the-pictures.md)

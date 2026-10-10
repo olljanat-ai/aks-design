@@ -1,0 +1,47 @@
+%% Encryption at rest with customer-managed keys, all kept in the environment's platform Key Vault.
+%% Per cluster: a KMS key for etcd (control plane) and a disk key for the OS disks of all its nodes (AKS allows only one
+%% disk encryption set per cluster, not per node pool). Stateful cluster: also one key per isolation zone for its volumes.
+flowchart TB
+    subgraph KV["Platform Key Vault kv-&lt;env&gt;-platform · public access disabled, trusted services bypass, purge protection, CanNotDelete lock"]
+        direction LR
+        kslkms["key-sl-az&lt;N&gt;-kms"]
+        ksldisk["key-sl-az&lt;N&gt;-disk"]
+        ksfkms["key-sf-kms"]
+        ksfdisk["key-sf-disk"]
+        kpv["key-sf-pv-int-fi<br/>key-sf-pv-int-se<br/>key-sf-pv-ext-fi<br/>key-sf-pv-ext-se"]
+        certs["cert-&lt;zone&gt;-…<br/>(section 13)"]
+    end
+
+    subgraph SL["Stateless cluster sl-az&lt;N&gt; (one per cell)"]
+        direction TB
+        slapi["Control plane · etcd Secrets<br/>KMS, private key vault<br/>(API Server VNet Integration)"]
+        sldes["des-&lt;env&gt;-sl-az&lt;N&gt;<br/>cluster-wide, set at creation"]
+        slnodes["system pool + all NAP nodes<br/>ephemeral OS disks<br/>encryption at host"]
+    end
+
+    subgraph SF["Stateful cluster sf"]
+        direction TB
+        sfapi["Control plane · etcd Secrets<br/>KMS, private key vault"]
+        sfdes["des-&lt;env&gt;-sf<br/>cluster-wide, set at creation"]
+        sfnodes["system pool + zone pools &lt;zone&gt;z1–z3<br/>OS disks · encryption at host"]
+        zdes["des-&lt;env&gt;-sf-&lt;zone&gt; (one per zone)"]
+        sc["StorageClasses &lt;zone&gt;-premium-zrs, …<br/>+ zone storage account (Azure Files)<br/>Azure Policy: PVCs only on own zone's classes"]
+        pv["Persistent volumes and backups<br/>of zone &lt;zone&gt;"]
+    end
+
+    kslkms -->|"Crypto User on this key<br/>(control plane identity)"| slapi
+    ksldisk -->|"Crypto Service Encryption User<br/>auto key rotation"| sldes --> slnodes
+    ksfkms -->|"Crypto User on this key"| sfapi
+    ksfdisk -->|"Crypto Service Encryption User"| sfdes --> sfnodes
+    kpv -->|"one key per zone"| zdes --> sc --> pv
+
+    note["Not possible in AKS: a disk key per node pool or per AKSNodeClass<br/>→ one OS-disk key per cluster, application data separated per zone<br/>Rotation: new key version every 12 months, no expiry dates<br/>KMS: pipeline updates key version + re-writes Secrets, dev → acc → prd"]
+
+    classDef cp fill:#eceff1,stroke:#455a64,color:#000
+    classDef sl fill:#e0f2f1,stroke:#00695c,color:#000
+    classDef sf fill:#fce4ec,stroke:#ad1457,color:#000
+    classDef note fill:#fffde7,stroke:#9e9d24,color:#000
+    class kslkms,ksldisk,ksfkms,ksfdisk,kpv,certs cp
+    class slapi,sldes,slnodes sl
+    class sfapi,sfdes,sfnodes,zdes,sc,pv sf
+    class note note

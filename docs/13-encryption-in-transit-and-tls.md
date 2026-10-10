@@ -2,7 +2,8 @@
 
 ![Encryption in transit](../images/13-tls-encryption.svg)
 
-Every hop is encrypted, but each cluster type does it in the way that costs the applications least.
+Every hop is encrypted, but each cluster type does it in the way that costs the applications least. Encryption at
+rest with customer-managed keys is in [section 18](18-encryption-at-rest-and-customer-managed-keys.md).
 
 ## Stateless clusters: VNet encryption + TLS-only Traefik gateway
 
@@ -65,7 +66,8 @@ Internet access to Let's Encrypt or write access to DNS.
 - **One platform Key Vault per environment.** `kv-<env>-platform` (RBAC permission model, public access disabled,
   purge protection) exists exactly once per environment, is created by the environment IaC module and is shared by all
   clusters of that environment. It holds **all certificates of the environment** – the zone vaults hold none – plus
-  the renewal job's ACME account key. Every cluster spoke has one private endpoint to it in a small shared subnet
+  the renewal job's ACME account key, and the customer-managed keys of the environment's clusters
+  ([section 18](18-encryption-at-rest-and-customer-managed-keys.md)). Every cluster spoke has one private endpoint to it in a small shared subnet
   `snet-platform-pe` (control plane zone, [picture 2](02-network-layout.md)).
 - **Certificates per environment.** Each environment gets its own certificates in its own vault; nothing is copied
   between environments, and a dev or acc identity can never read a prd key:
@@ -94,8 +96,9 @@ Internet access to Let's Encrypt or write access to DNS.
   object) instead of the whole vault. Every identity that needs a certificate – each zone's Traefik, stateful
   applications, any application with a client or server certificate – gets **Key Vault Secrets User** scoped to
   `kv-<env>-platform/secrets/cert-<zone>-…` of *its own zone*. Key Vault exposes a certificate together with its
-  private key as a secret of the same name, which is what the Secrets Store CSI driver reads. No identity has a role on
-  the vault scope except the renewal job and the platform team (PIM). The role assignments are created by the
+  private key as a secret of the same name, which is what the Secrets Store CSI driver reads. No identity has a data-plane role on
+  the vault scope except the renewal job and the platform team (PIM); the clusters' control plane identities have Key
+  Vault Contributor (management plane only) for KMS ([section 18](18-encryption-at-rest-and-customer-managed-keys.md#trade-off-cluster-identities-on-the-shared-platform-vault)). The role assignments are created by the
   environment IaC module from the application onboarding (a "needs certificate" flag), so a certificate must exist
   before it can be assigned – the module creates it with a short-lived self-signed placeholder (issuer `Self`) that
   the job replaces on its first run.
