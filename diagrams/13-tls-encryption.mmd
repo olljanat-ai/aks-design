@@ -19,7 +19,7 @@ flowchart LR
 
     subgraph SL["Stateless clusters sl-az1/2/3 · Azure CNI Overlay · VNet encryption between nodes"]
         direction TB
-        tr["Traefik Gateway (zone ext-fi)<br/>websecure :443 only<br/>HSTS · no :80<br/>cert synced by Secrets Store CSI"]
+        tr["Traefik Gateway (zone ext-fi)<br/>websecure :443 only<br/>HSTS · no :80<br/>cert Secret written by ESO"]
         subgraph N1["node A"]
             app1["app-a pod<br/>plain HTTP"]
         end
@@ -31,7 +31,7 @@ flowchart LR
     subgraph SF["Stateful cluster · Azure CNI (VNet) · no Gateway API, no Ingress"]
         direction TB
         ilb["Internal LB Service<br/>snet-ext-fi-ilb"]
-        db["app-x pod<br/>terminates TLS itself<br/>same zone cert as PEM files (CSI)"]
+        db["app-x pod<br/>terminates TLS itself<br/>same zone cert as PEM files (ESO Secret)"]
     end
 
     paas["Azure PaaS<br/>private endpoint<br/>TLS enforced"]
@@ -46,8 +46,8 @@ flowchart LR
     job -->|"order / renew"| le
     job -->|"TXT record"| pubdns
     job -->|"import certificate"| kv
-    kv -.->|"workload identity,<br/>RBAC on this certificate only"| tr
-    kv -.->|"workload identity,<br/>RBAC on this certificate only"| db
+    kv -.->|"zone's External Secrets Operator,<br/>RBAC on this certificate only"| tr
+    kv -.->|"zone's External Secrets Operator,<br/>RBAC on this certificate only"| db
     plain -.-x|"rejected: no listener, no LB port,<br/>Azure Policy denies HTTP listeners"| tr
 
     linkStyle 14 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5

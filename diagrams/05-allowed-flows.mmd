@@ -13,6 +13,7 @@ flowchart LR
         direction TB
         n["Nodes<br/>snet-int-fi-nodes"]
         p["Pods<br/>stateful: snet-int-fi-pods<br/>stateless: overlay, SNAT to node IP"]
+        eso["External Secrets Operator<br/>ns int-fi-secrets"]
         kv["Key Vault kv-int-fi<br/>(private endpoint)"]
     end
 
@@ -32,8 +33,8 @@ flowchart LR
     api -->|"② TCP 10250 kubelet"| n
     p -->|"③ UDP/TCP 53"| dns
     ms -->|"④ TCP 10250 metrics"| n
-    p -->|"⑤ TCP 443"| kv
-    p -->|"⑤b TCP 443<br/>certificate consumers only"| pkv
+    eso -->|"⑤ TCP 443<br/>ESO only, no app pods"| kv
+    eso -->|"⑤b TCP 443<br/>ESO only"| pkv
     api -->|"TCP 443 KMS key<br/>(own cluster's key only)"| pkv
     Z -->|"⑥ all egress via UDR"| fw
     fw -->|"FQDN allow-list"| azure
@@ -46,6 +47,6 @@ flowchart LR
     classDef other fill:#f5f5f5,stroke:#9e9e9e,color:#000
     classDef hub fill:#ede7f6,stroke:#5e35b1,color:#000
     class api,dns,ms,pkv cp
-    class n,p,kv int
+    class n,p,eso,kv int
     class on,okv other
     class fw,azure hub

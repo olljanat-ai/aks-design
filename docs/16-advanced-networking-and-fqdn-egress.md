@@ -17,7 +17,7 @@ egress per namespace ([below](#observing-and-troubleshooting)).
 
 **Rule: an application can send traffic out of the cluster only to destinations that it has declared by FQDN.** No
 policy means no traffic leaves the cluster; IP addresses and CIDRs cannot be used to open egress. This applies to
-every destination outside the cluster – Azure PaaS private endpoints, Key Vault, Entra ID, the stateful cluster's
+every destination outside the cluster – Azure PaaS private endpoints, Key Vault (External Secrets Operator only), Entra ID, the stateful cluster's
 internal load balancers, on-premises systems and the Internet – and to both cluster types.
 
 ## Why per-application FQDN policies
@@ -118,12 +118,10 @@ spec:
           rules:
             dns:
               - matchName: login.microsoftonline.com
-              - matchName: kv-prd-int-fi.vault.azure.net
               - matchName: psql-prd-int-fi-orders.postgres.database.azure.com
               - matchName: search.int-fi.prd.example.com
     - toFQDNs:
         - matchName: login.microsoftonline.com          # Entra ID – workload identity token exchange
-        - matchName: kv-prd-int-fi.vault.azure.net      # zone Key Vault (private endpoint)
       toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
     - toFQDNs:
         - matchName: psql-prd-int-fi-orders.postgres.database.azure.com   # PaaS (private endpoint)
@@ -133,14 +131,13 @@ spec:
       toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
 ```
 
-- **Names, not private IPs.** Applications use the public service names (`*.vault.azure.net`,
-  `*.postgres.database.azure.com`); the hub Private DNS zones answer with a CNAME to `privatelink.*` and the private
+- **Names, not private IPs.** Applications use the public service names (`*.postgres.database.azure.com`,
+  `*.servicebus.windows.net`); the hub Private DNS zones answer with a CNAME to `privatelink.*` and the private
   endpoint IP, and Cilium allows the addresses returned for the queried name. A private endpoint that moves to a new
   IP needs no policy change.
-- **Environment-specific names** (`kv-dev-…`, `kv-prd-…`) come from the Kustomize overlays like image digests;
+- **Environment-specific names** (`psql-dev-…`, `psql-prd-…`) come from the Kustomize overlays like image digests;
   `stateless` and `stateful` overlays may differ.
-- **Platform presets.** A Kustomize component in `infrastructure/base` offers presets – `entra-id`, `zone-key-vault`,
-  `platform-key-vault` (certificate pods only), `azure-monitor` – that expand to the right names per zone and
+- **Platform presets.** A Kustomize component in `infrastructure/base` offers presets – `entra-id`, `azure-monitor` – that expand to the right names per zone and
   environment. They are still part of the application's own `egress` policy: nothing is opened for an application
   that does not ask for it.
 - **No policy, no egress.** An application that needs nothing outside the cluster simply has no `egress` policy (CI
@@ -158,9 +155,10 @@ on its own; together with Cilium's default deny that is enough to make FQDN poli
 | DNS rules only for names that are also in a `toFQDNs` of the same policy, plus `*.cluster.local` | No resolving of names that cannot be reached (DNS exfiltration) |
 | Kubernetes `NetworkPolicy` with egress `ipBlock` rejected | Cilium enforces `NetworkPolicy` too; it must not become a CIDR back door |
 | `CiliumClusterwideNetworkPolicy`, `CiliumCIDRGroup`, `CiliumEgressGatewayPolicy` and policies in other namespaces: platform only (Kubernetes RBAC + Azure Policy) | Applications cannot widen the baseline |
+| No Key Vault names (`*.vault.azure.net`, `*.vaultcore.azure.net`) in application `toFQDNs` or DNS rules | Only the zone's External Secrets Operator reads Key Vault ([section 6](06-workload-identity-and-secrets.md#delivered-only-by-external-secrets-operator)) |
 | Pod `dnsPolicy` must be `ClusterFirst` (no `None` with own `nameservers`), no `hostNetwork` | DNS must go through CoreDNS and the ACNS DNS proxy, or FQDN policies cannot work |
 
-Platform namespaces (`<zone>-gateway`, `flux-system`, monitoring, the Secrets Store CSI provider) have
+Platform namespaces (`<zone>-gateway`, `<zone>-secrets` with External Secrets Operator – the only pods allowed to reach the zone and platform Key Vaults –, `flux-system`, monitoring) have
 platform-owned egress policies built the same way – FQDNs wherever the destination has a name – and are reviewed
 with the platform change. `kube-system` and node (host network) traffic – kubelet, image pulls, AKS-required FQDNs –
 are not pod traffic; they are controlled by the Firewall allow-list as before.

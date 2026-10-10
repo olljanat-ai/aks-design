@@ -21,22 +21,21 @@ flowchart LR
     subgraph DEST["Declared destinations"]
         direction TB
         entra["login.microsoftonline.com"]
-        kv["kv-prd-int-fi.vault.azure.net<br/>(private endpoint)"]
         pg["psql-…postgres.database.azure.com<br/>(private endpoint)"]
         sf["search.int-fi.prd.example.com<br/>(stateful cluster ILB)"]
     end
 
-    other["Undeclared name or raw IP<br/>e.g. other zone's vault, Internet"]:::off
+    other["Undeclared name or raw IP<br/>e.g. any Key Vault (ESO only), Internet"]:::off
 
     pod -->|"DNS query"| dnsp -->|"allowed names only"| coredns
     dnsp -->|"FQDN → IP mappings"| cilium
     pol -.->|"applied by"| cilium
     base -.->|"applied by"| cilium
     pod --> cilium -->|"declared FQDN + port"| fw
-    fw --> entra & kv & pg & sf
+    fw --> entra & pg & sf
     cilium x-.-x|"⛔ dropped by Cilium<br/>(and by the Firewall if not on the zone list)"| other
 
-    linkStyle 11 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
+    linkStyle 10 stroke:#c62828,stroke-width:2px,stroke-dasharray:5 5
 
     classDef int fill:#e3f2fd,stroke:#1565c0,color:#000
     classDef cp fill:#eceff1,stroke:#455a64,color:#000
@@ -45,5 +44,5 @@ flowchart LR
     classDef off fill:#ffebee,stroke:#c62828,color:#000,stroke-dasharray: 5 5
     class pod int
     class pol,base note
-    class cilium,dnsp,coredns,entra,kv,pg,sf cp
+    class cilium,dnsp,coredns,entra,pg,sf cp
     class fw hub

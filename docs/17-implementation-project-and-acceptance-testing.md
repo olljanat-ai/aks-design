@@ -83,7 +83,8 @@ Automated negative tests, kept from phase 2, that run as a pipeline stage:
 | Test | Expected result |
 |---|---|
 | From a pod in every zone, connect to every other zone's pods, ILB, nodes, Key Vault and private endpoints, in the same cell, the other cells and the stateful cluster | Blocked (NSG, Firewall and Cilium each log the drop) ([section 5](05-allowed-and-blocked-flows.md)) |
-| Application A reads application B's secrets in the same zone Key Vault | `403` from Key Vault ABAC ([section 6](06-workload-identity-and-secrets.md)) |
+| Application A's `ExternalSecret` references application B's secret in the same zone Key Vault | Sync fails with `403` from Key Vault ABAC ([section 6](06-workload-identity-and-secrets.md)) |
+| An application reads Key Vault itself: SDK call with its own identity, a pod running as `secrets-reader`, a `SecretProviderClass` or CSI volume, a hand-made `Secret`, a vault name in its egress policy | Dropped by Cilium / `403` (no role) / denied by admission; an Azure Resource Graph query finds no Key Vault data-plane role on any application identity |
 | Egress to an FQDN not in the application's policy, to an IP address, and to an FQDN in the policy but not in the zone's Firewall allow-list | Dropped by Cilium; CI check fails the last one before deployment ([section 16](16-advanced-networking-and-fqdn-egress.md)) |
 | Apply each forbidden manifest of the [policy table](14-policy-enforcement.md) (privileged pod, image not from ACR, `toCIDR`, `PersistentVolumeClaim` in a stateless cluster, …) | Denied by admission |
 | Reach the API server from the client VNet, the hub and a spoke | Only from the management VNet ([section 3](03-control-plane.md)) |
@@ -115,7 +116,7 @@ and Kubernetes chaos experiments, every one under load. Each experiment must als
 | AZ outage (Chaos Studio zone-down on all VMSS of one AZ, stateless and stateful) | Same as above for stateless; the stateful cluster keeps quorum and serves from two AZs |
 | Node failures: kill system pool node, application node, the node of a Traefik replica | No user-visible errors beyond budget; PDBs respected |
 | Platform components: restart Cilium agents, ACNS security agent, CoreDNS, Traefik, Flux, the Azure Policy add-on | FQDN policies stay enforced during Cilium restarts; traffic continues; admission fails closed as designed |
-| Dependency loss: PaaS failover (zone-redundant database), Key Vault unavailable for the CSI driver, Entra ID token endpoint slow | Applications keep running with cached credentials and secrets; recovery without manual steps |
+| Dependency loss: PaaS failover (zone-redundant database), Key Vault unavailable for External Secrets Operator, ESO controller of a zone stopped, Entra ID token endpoint slow | Applications keep running and new pods start with cached credentials and the Secrets already in the cluster; failed syncs alert; recovery without manual steps |
 | Traffic layer: remove a Front Door origin, restart an NGINXaaS deployment | Failover within target; cell affinity re-established |
 | Firewall rule mistake (block a platform FQDN in one cell) | Detected by monitoring, contained to one cell |
 
