@@ -8,10 +8,11 @@ run different kinds of workloads:
 
 | | Stateless clusters | Stateful cluster |
 |---|---|---|
-| Zone nodes | [Node auto provisioning](https://learn.microsoft.com/en-us/azure/aks/node-autoprovision) (NAP, AKS-managed Karpenter): one Karpenter `NodePool` + `AKSNodeClass` per zone (`intfi`, `extfi`, …); no classic node pools for workloads | Classic AKS node pools (VM scale sets), one per zone *and* AZ (`intfiz1`, `intfiz2`, `intfiz3`, …) |
+| Zone nodes | [Node auto provisioning](https://learn.microsoft.com/en-us/azure/aks/node-autoprovision) (NAP, AKS-managed Karpenter): two Karpenter `NodePool`s per zone – on-demand (`intfi`, `extfi`, …) and spot (`intfispot`, `extfispot`, …) – sharing one `AKSNodeClass`; no classic node pools for workloads | Classic AKS node pools (VM scale sets), one per zone *and* AZ (`intfiz1`, `intfiz2`, `intfiz3`, …) |
 | Subnet | `AKSNodeClass` `vnetSubnetID` = the zone's `snet-<zone>-nodes` | `--vnet-subnet-id` `snet-<zone>-nodes`, `--pod-subnet-id` `snet-<zone>-pods` |
 | Availability zone | `NodePool` requirement `topology.kubernetes.io/zone In [<region>-<N>]` – the cell's AZ | `--zones 1` / `2` / `3`, one pool per AZ |
-| VM sizes | Chosen by NAP for the pending pods from an allow-list of several VNet-encryption-capable SKU families in the `NodePool` requirements | One fixed size per pool, chosen when the workload's exception is onboarded |
+| VM sizes | Chosen by NAP for the pending pods from an allow-list of several VNet-encryption-capable SKU families in the `NodePool` requirements, **amd64 and arm64** | One fixed size per pool, chosen when the workload's exception is onboarded; amd64 |
+| Capacity type | On-demand and **spot**, chosen per application ([below](#cpu-architecture-and-spot-chosen-by-the-application)) | On-demand only |
 | Scaling | Nodes are created for pending pods and removed or consolidated when they are empty or under-used; the `NodePool` `limits` (CPU, memory) are the upper bound, sized for N+1 | **No autoscaling.** Fixed node count per pool, set in IaC; capacity changes are planned changes |
 | Node replacement | Drift (new node image or Kubernetes version), consolidation and `expireAfter`, limited by the `NodePool` disruption budgets; PDBs are respected | Surge upgrade per pool, one AZ at a time ([section 12](12-zero-downtime-cluster-upgrades.md#stateful-cluster)) |
 | Defined by | Flux, in `infrastructure/stateless` (subnet IDs and AZ from the `cluster-vars` ConfigMap), applied before anything that runs on zone nodes | Cluster IaC |
@@ -35,6 +36,61 @@ NAP details in the stateless clusters:
   is being changed; all applications have ≥ 2 replicas and a PDB, so consolidation never takes an application down.
 - Only the platform manages `NodePool` and `AKSNodeClass` objects (Kubernetes RBAC), and Azure Policy rejects any whose
   subnet, label, taint or VM sizes do not match its zone ([section 14](14-policy-enforcement.md)).
+
+## CPU architecture and spot, chosen by the application
+
+To lower cost, the stateless clusters offer **amd64 and arm64** nodes and **on-demand and spot** nodes in every
+zone. The platform supports all four combinations; the team that builds an application decides what the application
+supports and declares it with two labels in the pod template. Without labels an application gets the safe default,
+amd64 on on-demand nodes, so nothing changes for applications that do not opt in.
+
+| Pod label | Values | Effect (injected by Azure Policy mutation) |
+|---|---|---|
+| `platform/arch` | `amd64` (default) | `nodeSelector` `kubernetes.io/arch: amd64` |
+| | `arm64` | `nodeSelector` `kubernetes.io/arch: arm64` |
+| | `multi` | no architecture constraint: NAP picks the cheapest fitting VM size of either architecture (usually arm64) and the scheduler may use any free node |
+| `platform/capacity` | `on-demand` (default) | nothing – the pod cannot tolerate the spot taint, so it runs only on on-demand nodes |
+| | `spot` | toleration `platform/capacity=spot:NoSchedule` and a *preferred* node affinity for `karpenter.sh/capacity-type: spot`: the pod runs on spot nodes when there are any, and on on-demand nodes when spot capacity is not available |
+
+How the platform handles them:
+
+- **Two `NodePool`s per zone**, both allowing `kubernetes.io/arch In [amd64, arm64]`:
+  - `<zone>` – `karpenter.sh/capacity-type In [on-demand]`, no extra taint;
+  - `<zone>spot` – `karpenter.sh/capacity-type In [spot]`, taint `platform/capacity=spot:NoSchedule`, and a higher
+    `weight`, so NAP tries spot first for pods that tolerate it and falls back to the on-demand `NodePool` when Azure
+    has no spot capacity for the allowed SKUs in the cell's AZ.
+
+  Both share the zone's `AKSNodeClass` (subnet, image), label and zone taint; the spot taint is what keeps every
+  application that did not choose spot away from spot nodes, also from spot nodes that already exist and have room.
+- **Allow-lists per architecture**: the SKU allow-list holds amd64 families (e.g. Dsv5/Dsv6, Esv5/Esv6) and arm64
+  families (e.g. Dpsv6/Epsv6, Cobalt 100) – only those that support VNet encryption, because it is the only encryption
+  between nodes ([section 13](13-encryption-in-transit-and-tls.md)). The spot `NodePool` uses the same allow-list:
+  several families per architecture also give spot more places to find capacity.
+- **Capacity and N+1**: the on-demand `NodePool` limits alone are sized for N+1 (one cell carrying the whole
+  environment), because spot capacity can disappear exactly when a cell is pre-scaled. The spot `NodePool` limits cap
+  how much of a zone can run on spot.
+- **Spot evictions** come with about 30 seconds' notice and do **not** respect PDBs; Azure can evict many spot nodes
+  at once. NAP replaces evicted capacity – with spot if it is available, otherwise on-demand. An application may
+  choose `spot` only if it tolerates losing replicas suddenly: graceful shutdown within 30 seconds, no long-running
+  requests that cannot be retried, and work that is safe to repeat (queue consumers, batch jobs, stateless APIs with
+  enough replicas). Latency-critical entry points and singletons-by-design stay on-demand.
+- **Images**: `arm64` needs an arm64 image, `multi` a multi-architecture image (OCI image index with `linux/amd64`
+  and `linux/arm64`). Admission cannot inspect images, so the build pipeline checks the platforms of the image index
+  in ACR against the labels in the rendered manifests before an image is promoted, and the application's tests run on
+  every architecture it declares. All platform DaemonSets (Cilium, CSI drivers, monitoring agent) are
+  multi-architecture.
+- **Validation**: applications set only the labels; Azure Policy rejects unknown label values, pods that set
+  `kubernetes.io/arch` or `karpenter.sh/capacity-type` in their own `nodeSelector` / affinity, and pods that tolerate
+  `platform/capacity` without the `spot` label ([section 14](14-policy-enforcement.md)).
+- **System pool and stateful cluster**: the system pool stays amd64 on-demand. The stateful cluster runs only
+  on-demand nodes – a spot eviction would move a replica and re-attach its disks without a PDB – and only amd64 pools;
+  in the stateful cluster any label value other than the defaults is rejected. An arm64 pool set (one per zone and
+  AZ) can be added when an onboarded workload needs it.
+
+Choosing is a trade-off the application team owns: `multi` + `spot` is the cheapest, `amd64` + `on-demand` the most
+predictable. The choice can be changed in any release, because it is only a label in the pod template.
+
+## Zone pinning
 
 Application namespaces are named `<zone>-<app>` and carry the matching `platform/zone` label. The Azure Policy
 add-on injects the zone's `nodeSelector` and toleration into every pod (one mutation definition per zone, matched by
