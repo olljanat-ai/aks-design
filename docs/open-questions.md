@@ -47,7 +47,14 @@
   validation zone.
 - "No Internet" for the stateful cluster: are the Azure Policy add-on FQDNs acceptable as a second exception next to
   Entra ID?
+- AI-driven operations: which model provider and region are acceptable for the agents (data residency of logs and
+  diagnostics sent to the model), and is a private endpoint to it required?
+- Risk tiers: may tier-low changes (patches per timetable, digest promotion that passed acc, limits inside
+  `limits.yaml`) really merge to prd without a human, or does every prd change need one human at first? Who owns
+  `limits.yaml` – platform team alone, or platform + security?
+- Git platform: GitHub (organisation rulesets, required workflows, GitHub Apps) as in the draft, or Azure DevOps with
+  branch policies and build validation?
 
 ---
 
-[Back to contents](../README.md) · Previous: [14. Policy enforcement with the Azure Policy add-on](14-policy-enforcement.md) · Next: [Editing the pictures](editing-the-pictures.md)
+[Back to contents](../README.md) · Previous: [15. AI-driven day 2 operations](15-ai-driven-day-2-operations.md) · Next: [Editing the pictures](editing-the-pictures.md)
